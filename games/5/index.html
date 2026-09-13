@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Gravity Well</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    html, body {
+      width: 100vw;
+      height: 100dvh;
+      overflow: hidden;
+      background: #0a0a1a;
+      touch-action: none;
+      overscroll-behavior: none;
+      font-family: 'Segoe UI', Roboto, system-ui, sans-serif;
+    }
+    #game-container {
+      position: relative;
+      width: 100vw;
+      height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0a0a1a;
+    }
+    canvas {
+      display: block;
+      background: radial-gradient(circle at 30% 30%, #1a1a3a, #0a0a1a);
+      box-shadow: 0 0 40px rgba(100, 100, 255, 0.2);
+      border-radius: 8px;
+    }
+    #language-toggle {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 10;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      font-size: 20px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      backdrop-filter: blur(5px);
+      transition: background 0.2s;
+    }
+    #language-toggle:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      color: #fff;
+      font-size: 18px;
+      text-shadow: 0 0 10px rgba(100, 100, 255, 0.8);
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 10px 16px;
+      border-radius: 10px;
+      backdrop-filter: blur(5px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    #hud div {
+      margin-bottom: 4px;
+    }
+    #hud div:last-child {
+      margin-bottom: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="hud">
+      <div id="score-display">Score: 0</div>
+      <div id="best-display">Best: 0</div>
+    </div>
+    <button id="language-toggle" aria-label="Toggle language">🇬🇧/🇷🇺</button>
+  </div>
+
+  <script>
+    (function() {
+      // --- i18n ---
+      const i18n = {
+        en: {
+          title: "Gravity Well",
+          score: "Score",
+          best: "Best",
+          play: "Play",
+          gameover: "Game Over",
+          restart: "Tap or Press Space to Restart",
+          pause: "Pause",
+          tapToStart: "Tap or Press Space to Start",
+          tapToPlace: "Tap to place a gravity well",
+          blackHole: "Avoid black holes!",
+          stardust: "Collect stardust!"
+        },
+        ru: {
+          title: "Гравитационный Колодец",
+          score: "Счёт",
+          best: "Рекорд",
+          play: "Играть",
+          gameover: "Игра окончена",
+          restart: "Тап или Пробел для рестарта",
+          pause: "Пауза",
+          tapToStart: "Тап или Пробел для старта",
+          tapToPlace: "Нажмите, чтобы создать гравитационный колодец",
+          blackHole: "Избегайте чёрных дыр!",
+          stardust: "Собирайте звёздную пыль!"
+        }
+      };
+
+      function getLang() { return localStorage.getItem('gravitywell_lang') || 'en'; }
+      function setLang(l) { localStorage.setItem('gravitywell_lang', l); renderUI(); }
+      function t(key) { return i18n[getLang()][key] || i18n.en[key] || key; }
+      function toggleLang() { setLang(getLang() === 'en' ? 'ru' : 'en'); }
+
+      document.getElementById('language-toggle').addEventListener('click', toggleLang);
+
+      // --- Canvas Setup ---
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      let logicalW = 800;
+      let logicalH = 600;
+      let scaleFactor = 1;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      function resizeCanvas() {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const dpr = window.devicePixelRatio || 1;
+        // Fixed logical aspect ratio 4:3
+        const targetAspect = 4 / 3;
+        let cssW, cssH;
+        if (vw / vh > targetAspect) {
+          cssH = vh;
+          cssW = vh * targetAspect;
+        } else {
+          cssW = vw;
+          cssH = vw / targetAspect;
+        }
+        // Set internal drawing buffer in device pixels
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        // Set CSS size to match logical aspect
+        canvas.style.width = cssW + 'px';
+        canvas.style.height = cssH + 'px';
+        // Compute scale factor from logical to device pixels
+        scaleFactor = canvas.width / logicalW;
+        offsetX = 0;
+        offsetY = 0;
+        // Center the canvas via flexbox already, but ensure no margin
+        canvas.style.margin = '0';
+      }
+
+      window.addEventListener('resize', resizeCanvas);
+      window.addEventListener('orientationchange', resizeCanvas);
+
+      // --- Game State ---
+      const STATE = { START: 'start', PLAYING: 'playing', GAMEOVER: 'gameover' };
+      let gameState = STATE.START;
+      let score = 0;
+      let best = parseInt(localStorage.getItem('gravitywell_best') || '0', 10);
+      let frame = 0;
+      let gameSpeed = 1.0;
+
+      // Player orb
+      const player = {
+        x: 200,
+        y: 300,
+        vx: 0,
+        vy: 0,
+        r: 12,
+        alive: true
+      };
+
+      // Gravity wells (player-created)
+      let wells = [];
+      const MAX_WELLS = 3;
+      const WELL_LIFETIME = 90; // frames
+      const WELL_STRENGTH = 0.6;
+      const WELL_RADIUS = 120;
+
+      // Stardust particles
+      let stardust = [];
+      const STARDUST_SPAWN_RATE = 0.03;
+
+      // Black holes (enemies)
+      let blackHoles = [];
+      const BLACKHOLE_SPAWN_RATE = 0.008;
+      const BLACKHOLE_RADIUS = 28;
+
+      // Particles for visual effects
+      let particles = [];
+
+      // Screen shake
+      let shakeTime = 0;
+      let shakeIntensity = 0;
+
+      // Input
+      let pointer = { x: 0, y: 0, active: false };
+
+      // --- Helper Functions ---
+      function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+      function dist(x1, y1, x2, y2) {
+        const dx = x2 - x1, dy = y2 - y1;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      function spawnStardust() {
+        const margin = 40;
+        stardust.push({
+          x: logicalW + margin,
+          y: margin + Math.random() * (logicalH - margin * 2),
+          r: 6,
+          collected: false,
+          pulse: Math.random() * Math.PI * 2
+        });
+      }
+
+      function spawnBlackHole() {
+        const margin = 60;
+        blackHoles.push({
+          x: logicalW + margin,
+          y: margin + Math.random() * (logicalH - margin * 2),
+          r: BLACKHOLE_RADIUS,
+          rotation: 0,
+          alive: true
+        });
+      }
+
+      function spawnParticles(x, y, count, color, speed) {
+        for (let i = 0; i < count; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const spd = speed * (0.5 + Math.random() * 0.5);
+          particles.push({
+            x, y,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd,
+            life: 1.0,
+            decay: 0.02 + Math.random() * 0.03,
+            color,
+            size: 2 + Math.random() * 4
+          });
+        }
+      }
+
+      function addScorePopup(x, y, value) {
+        // Simple particle-based popup
+        spawnParticles(x, y, 8, '#ffdd44', 2);
+      }
+
+      function triggerShake(intensity, duration) {
+        shakeIntensity = intensity;
+        shakeTime = duration;
+      }
+
+      function getLogicalPointer(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (clientX - rect.left) / rect.width * logicalW;
+        const y = (clientY - rect.top) / rect.height * logicalH;
+        return { x: clamp(x, 0, logicalW), y: clamp(y, 0, logicalH) };
+      }
+
+      // --- Input Handling ---
+      function handlePointerDown(clientX, clientY) {
+        if (gameState === STATE.START || gameState === STATE.GAMEOVER) {
+          startGame();
+          return;
+        }
+        if (gameState === STATE.PLAYING) {
+          const pos = getLogicalPointer(clientX, clientY);
+          placeWell(pos.x, pos.y);
+        }
+      }
+
+      function placeWell(x, y) {
+        // Check if too close to existing well
+        for (let w of wells) {
+          if (dist(w.x, w.y, x, y) < 40) return;
+        }
+        if (wells.length >= MAX_WELLS) {
+          wells.shift(); // remove oldest
+        }
+        wells.push({
+          x, y,
+          r: 20,
+          life: WELL_LIFETIME,
+          maxLife: WELL_LIFETIME,
+          pulse: 0
+        });
+        spawnParticles(x, y, 12, '#88aaff', 3);
+        triggerShake(3, 10);
+      }
+
+      canvas.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        handlePointerDown(e.clientX, e.clientY);
+      });
+
+      canvas.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        const touch = e.touches[0];
+        handlePointerDown(touch.clientX, touch.clientY);
+      }, { passive: false });
+
+      // Keyboard
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space' || e.key === ' ') {
+          e.preventDefault();
+          if (gameState === STATE.START || gameState === STATE.GAMEOVER) {
+            startGame();
+          }
+        }
+        if (e.key === 'r' || e.key === 'R') {
+          if (gameState === STATE.GAMEOVER) startGame();
+        }
+        // Arrow keys / WASD to nudge player? Not needed but could add small control.
+        // For simplicity, no direct movement control.
+      });
+
+      // --- Game Logic ---
+      function resetGame() {
+        score = 0;
+        frame = 0;
+        gameSpeed = 1.0;
+        player.x = 200;
+        player.y = 300;
+        player.vx = 0;
+        player.vy = 0;
+        player.alive = true;
+        wells = [];
+        stardust = [];
+        blackHoles = [];
+        particles = [];
+        shakeTime = 0;
+        shakeIntensity = 0;
+      }
+
+      function startGame() {
+        resetGame();
+        gameState = STATE.PLAYING;
+      }
+
+      function gameOver() {
+        gameState = STATE.GAMEOVER;
+        player.alive = false;
+        triggerShake(15, 30);
+        spawnParticles(player.x, player.y, 40, '#ff4466', 6);
+        if (score > best) {
+          best = score;
+          localStorage.setItem('gravitywell_best', best.toString());
+        }
+      }
+
+      function update() {
+        if (gameState !== STATE.PLAYING) {
+          // Update particles even when game over for visual effect
+          updateParticles();
+          if (shakeTime > 0) shakeTime--;
+          return;
+        }
+
+        frame++;
+        gameSpeed = 1.0 + frame * 0.0005; // gradually increase speed
+
+        // Spawn stardust
+        if (Math.random() < STARDUST_SPAWN_RATE * gameSpeed) {
+          spawnStardust();
+        }
+
+        // Spawn black holes
+        if (Math.random() < BLACKHOLE_SPAWN_RATE * gameSpeed) {
+          spawnBlackHole();
+        }
+
+        // Update wells (lifetime)
+        for (let i = wells.length - 1; i >= 0; i--) {
+          wells[i].life--;
+          wells[i].pulse += 0.1;
+          if (wells[i].life <= 0) {
+            wells.splice(i, 1);
+          }
+        }
+
+        // Apply gravity from wells to player
+        let ax = 0, ay = 0;
+        for (let w of wells) {
+          const d = dist(player.x, player.y, w.x, w.y);
+          if (d < WELL_RADIUS && d > 5) {
+            const force = WELL_STRENGTH * (1 - d / WELL_RADIUS) * (w.life / w.maxLife);
+            const dx = (w.x - player.x) / d;
+            const dy = (w.y - player.y) / d;
+            ax += dx * force;
+            ay += dy * force;
+          }
+        }
+
+        // Add a constant rightward drift to keep the game moving
+        ax += 0.02 * gameSpeed;
+
+        // Update player physics
+        player.vx += ax;
+        player.vy += ay;
+        player.vx *= 0.98; // damping
+        player.vy *= 0.98;
+        player.x += player.vx;
+        player.y += player.vy;
+
+        // Bounce off top and bottom
+        if (player.y < player.r) {
+          player.y = player.r;
+          player.vy *= -0.8;
+          spawnParticles(player.x, player.y, 5, '#88aaff', 2);
+        }
+        if (player.y > logicalH - player.r) {
+          player.y = logicalH - player.r;
+          player.vy *= -0.8;
+          spawnParticles(player.x, player.y, 5, '#88aaff', 2);
+        }
+
+        // Keep player within horizontal bounds (but allow slight off-screen to left)
+        player.x = clamp(player.x, player.r, logicalW - player.r);
+
+        // Update stardust
+        for (let i = stardust.length - 1; i >= 0; i--) {
+          const s = stardust[i];
+          s.x -= 1.5 * gameSpeed;
+          s.pulse += 0.1;
+          // Check collection
+          if (!s.collected && dist(player.x, player.y, s.x, s.y) < player.r + s.r) {
+            s.collected = true;
+            score += 10;
+            spawnParticles(s.x, s.y, 15, '#ffdd44', 3);
+            addScorePopup(s.x, s.y, 10);
+            triggerShake(2, 5);
+            stardust.splice(i, 1);
+            continue;
+          }
+          // Remove if off-screen left
+          if (s.x < -50) {
+            stardust.splice(i, 1);
+          }
+        }
+
+        // Update black holes
+        for (let i = blackHoles.length - 1; i >= 0; i--) {
+          const b = blackHoles[i];
+          b.x -= 1.0 * gameSpeed;
+          b.rotation += 0.05;
+          // Check collision with player
+          if (dist(player.x, player.y, b.x, b.y) < player.r + b.r * 0.8) {
+            gameOver();
+            return;
+          }
+          // Remove if off-screen left
+          if (b.x < -80) {
+            blackHoles.splice(i, 1);
+          }
+        }
+
+        // Update particles
+        updateParticles();
+
+        // Update shake
+        if (shakeTime > 0) shakeTime--;
+      }
+
+      function updateParticles() {
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vx *= 0.96;
+          p.vy *= 0.96;
+          p.life -= p.decay;
+          if (p.life <= 0) {
+            particles.splice(i, 1);
+          }
+        }
+      }
+
+      // --- Rendering ---
+      function renderUI() {
+        document.getElementById('score-display').textContent = t('score') + ': ' + score;
+        document.getElementById('best-display').textContent = t('best') + ': ' + best;
+      }
+
+      function draw() {
+        ctx.save();
+        // Apply scale and shake
+        const shakeX = shakeTime > 0 ? (Math.random() - 0.5) * shakeIntensity : 0;
+        const shakeY = shakeTime > 0 ? (Math.random() - 0.5) * shakeIntensity : 0;
+        ctx.translate(shakeX, shakeY);
+
+        // Clear with gradient background
+        const grad = ctx.createRadialGradient(logicalW/2, logicalH/2, 50, logicalW/2, logicalH/2, logicalW);
+        grad.addColorStop(0, '#1a1a3a');
+        grad.addColorStop(1, '#0a0a1a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(-20, -20, logicalW + 40, logicalH + 40);
+
+        // Draw stars background (static)
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        for (let i = 0; i < 100; i++) {
+          const sx = (i * 137.5) % logicalW;
+          const sy = (i * 73.3) % logicalH;
+          const size = (i % 3) * 0.5 + 0.5;
+          ctx.beginPath();
+          ctx.arc(sx, sy, size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Draw gravity wells
+        for (let w of wells) {
+          const alpha = w.life / w.maxLife;
+          const pulse = Math.sin(w.pulse) * 0.2 + 1;
+          ctx.save();
+          ctx.globalAlpha = alpha * 0.8;
+          ctx.beginPath();
+          ctx.arc(w.x, w.y, w.r * pulse, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(100, 150, 255, 0.3)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(150, 200, 255, ' + alpha + ')';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          // Inner glow
+          ctx.beginPath();
+          ctx.arc(w.x, w.y, w.r * pulse * 0.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(200, 220, 255, ' + (alpha * 0.5) + ')';
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Draw stardust
+        for (let s of stardust) {
+          const pulse = Math.sin(s.pulse) * 0.3 + 1;
+          ctx.save();
+          ctx.globalAlpha = 0.9;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r * pulse, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffdd44';
+          ctx.shadowColor = '#ffdd44';
+          ctx.shadowBlur = 15;
+          ctx.fill();
+          // Sparkle
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r * 0.4, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Draw black holes
+        for (let b of blackHoles) {
+          ctx.save();
+          ctx.translate(b.x, b.y);
+          ctx.rotate(b.rotation);
+          // Outer glow
+          ctx.beginPath();
+          ctx.arc(0, 0, b.r * 1.3, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(200, 50, 100, 0.2)';
+          ctx.fill();
+          // Main black hole
+          ctx.beginPath();
+          ctx.arc(0, 0, b.r, 0, Math.PI * 2);
+          ctx.fillStyle = '#000000';
+          ctx.fill();
+          // Accretion disk
+          ctx.beginPath();
+          ctx.arc(0, 0, b.r * 0.8, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255, 100, 150, 0.8)';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          // Spikes
+          for (let i = 0; i < 4; i++) {
+            const angle = (i / 4) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(angle) * b.r * 0.9, Math.sin(angle) * b.r * 0.9);
+            ctx.lineTo(Math.cos(angle) * b.r * 1.4, Math.sin(angle) * b.r * 1.4);
+            ctx.strokeStyle = 'rgba(255, 80, 120, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        // Draw player
+        if (player.alive || gameState === STATE.PLAYING) {
+          ctx.save();
+          // Outer glow
+          ctx.beginPath();
+          ctx.arc(player.x, player.y, player.r * 1.8, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(100, 200, 255, 0.2)';
+          ctx.fill();
+          // Main orb
+          ctx.beginPath();
+          ctx.arc(player.x, player.y, player.r, 0, Math.PI * 2);
+          const playerGrad = ctx.createRadialGradient(player.x - 4, player.y - 4, 2, player.x, player.y, player.r);
+          playerGrad.addColorStop(0, '#aaddff');
+          playerGrad.addColorStop(0.7, '#44aaff');
+          playerGrad.addColorStop(1, '#0066cc');
+          ctx.fillStyle = playerGrad;
+          ctx.shadowColor = '#44aaff';
+          ctx.shadowBlur = 20;
+          ctx.fill();
+          // Highlight
+          ctx.beginPath();
+          ctx.arc(player.x - 4, player.y - 4, player.r * 0.3, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Draw particles
+        for (let p of particles) {
+          ctx.save();
+          ctx.globalAlpha = p.life;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.shadowColor = p.color;
+          ctx.shadowBlur = 10;
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Draw UI overlays
+        if (gameState === STATE.START) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+          ctx.fillRect(0, 0, logicalW, logicalH);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 48px "Segoe UI", Roboto, sans-serif';
+          ctx.shadowColor = '#44aaff';
+          ctx.shadowBlur = 20;
+          ctx.fillText(t('title'), logicalW/2, logicalH/2 - 60);
+          ctx.font = '24px "Segoe UI", Roboto, sans-serif';
+          ctx.fillStyle = '#aaddff';
+          ctx.fillText(t('tapToStart'), logicalW/2, logicalH/2 + 20);
+          ctx.font = '18px "Segoe UI", Roboto, sans-serif';
+          ctx.fillStyle = '#88bbee';
+          ctx.fillText(t('tapToPlace'), logicalW/2, logicalH/2 + 70);
+          ctx.fillText(t('stardust'), logicalW/2, logicalH/2 + 100);
+          ctx.fillText(t('blackHole'), logicalW/2, logicalH/2 + 130);
+          ctx.restore();
+        }
+
+        if (gameState === STATE.GAMEOVER) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(0, 0, logicalW, logicalH);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = '#ff4466';
+          ctx.font = 'bold 48px "Segoe UI", Roboto, sans-serif';
+          ctx.shadowColor = '#ff4466';
+          ctx.shadowBlur = 20;
+          ctx.fillText(t('gameover'), logicalW/2, logicalH/2 - 60);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '32px "Segoe UI", Roboto, sans-serif';
+          ctx.fillText(t('score') + ': ' + score, logicalW/2, logicalH/2 + 10);
+          ctx.font = '24px "Segoe UI", Roboto, sans-serif';
+          ctx.fillStyle = '#aaddff';
+          ctx.fillText(t('restart'), logicalW/2, logicalH/2 + 70);
+          ctx.restore();
+        }
+
+        ctx.restore();
+      }
+
+      // --- Main Loop ---
+      function loop() {
+        update();
+        renderUI();
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      // --- Initialization ---
+      resizeCanvas();
+      // Set canvas internal resolution scale for crisp rendering
+      // We'll use logical coordinates and scale context accordingly
+      // But we need to apply scale in draw. Let's set transform once.
+      // Actually, we'll handle scaling by setting canvas width/height to device pixels
+      // and using ctx.scale to map logical to device pixels.
+      // But we already set canvas.width/height in resizeCanvas.
+      // We need to scale the context to match logical dimensions.
+      // Let's modify draw to use logical coordinates and scale context.
+      // We'll set the transform at the start of draw.
+      // But we also need to handle DPR. We'll compute scaleFactor = canvas.width / logicalW,
+      // and similarly for height. Since aspect ratio matches, they should be equal.
+      // We'll set ctx.setTransform(scaleFactor, 0, 0, scaleFactor, 0, 0) in draw.
+      // However, we already have shake translation. We'll incorporate that.
+
+      // Let's adjust draw function to apply scale.
+      // We'll override draw with a wrapper.
+      const originalDraw = draw;
+      draw = function() {
+        ctx.save();
+        // Reset transform and scale to map logical to device pixels
+        const scaleX = canvas.width / logicalW;
+        const scaleY = canvas.height / logicalH;
+        ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+        // Now call original draw which uses logical coordinates
+        originalDraw.call(this);
+        ctx.restore();
+      };
+
+      // Start the game loop
+      loop();
+
+      // Also re-render UI on language change
+      // Override renderUI to update HUD text
+      const originalRenderUI = renderUI;
+      renderUI = function() {
+        originalRenderUI();
+        // Update button text? Not needed, it's static emoji.
+      };
+
+      // Ensure initial UI
+      renderUI();
+    })();
+  </script>
+</body>
+</html>
