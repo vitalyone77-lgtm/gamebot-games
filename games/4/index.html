@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Momentum Shift</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #game-container {
+      width: 100vw; height: 100dvh; overflow: hidden;
+      background: #0a0a1a; touch-action: none; overscroll-behavior: none;
+      display: flex; align-items: center; justify-content: center;
+      font-family: system-ui, -apple-system, sans-serif;
+      user-select: none; -webkit-user-select: none;
+    }
+    canvas { display: block; box-shadow: 0 0 40px #00ffff33; border-radius: 4px; }
+    #hud {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; color: #fff;
+    }
+    .lang-btn {
+      position: absolute; top: 12px; right: 12px;
+      pointer-events: auto; cursor: pointer;
+      background: rgba(255,255,255,0.1); border: 1px solid #00ffff88;
+      color: #fff; border-radius: 8px; padding: 6px 12px;
+      font-size: 16px; backdrop-filter: blur(4px);
+      touch-action: manipulation;
+    }
+    .lang-btn:active { background: rgba(0,255,255,0.3); }
+    .score-display {
+      position: absolute; top: 16px; left: 16px;
+      font-size: 22px; font-weight: 700; color: #00ffff;
+      text-shadow: 0 0 12px #00ffff88;
+    }
+    .best-display {
+      position: absolute; top: 44px; left: 16px;
+      font-size: 14px; color: #888;
+    }
+    .overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: rgba(5,5,20,0.85);
+      pointer-events: auto; cursor: pointer;
+      transition: opacity 0.3s;
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; }
+    .overlay h1 { font-size: clamp(28px, 8vw, 56px); color: #00ffff; text-shadow: 0 0 30px #00ffff66; margin-bottom: 8px; }
+    .overlay p { font-size: clamp(14px, 3.5vw, 20px); color: #ccc; margin: 6px 0; }
+    .overlay .big { font-size: clamp(18px, 5vw, 28px); color: #fff; font-weight: 700; margin-top: 20px; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .final-score { font-size: clamp(36px, 12vw, 72px); color: #ff00ff; text-shadow: 0 0 30px #ff00ff66; font-weight: 800; }
+  </style>
+</head>
+<body>
+<div id="game-container">
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div class="score-display" id="scoreEl">0</div>
+    <div class="best-display" id="bestEl"></div>
+    <button class="lang-btn" id="langBtn">🇬🇧/🇷🇺</button>
+  </div>
+  <div class="overlay" id="startOverlay">
+    <h1 id="titleEl">Momentum Shift</h1>
+    <p id="hintEl">Tap / Click to swap gravity</p>
+    <p id="hint2El">Avoid the walls</p>
+    <div class="big" id="startBtnEl">Tap or Press Space to Start</div>
+  </div>
+  <div class="overlay hidden" id="gameOverOverlay">
+    <h1 id="goTitleEl">Game Over</h1>
+    <div class="final-score" id="finalScoreEl">0</div>
+    <p id="goBestEl"></p>
+    <div class="big" id="restartBtnEl">Tap or Press Space to Restart</div>
+  </div>
+</div>
+<script>
+(function() {
+  // ---------- i18n ----------
+  const i18n = {
+    en: {
+      title: "Momentum Shift",
+      score: "Score",
+      best: "Best",
+      play: "Play",
+      gameover: "Game Over",
+      restart: "Tap or Press Space to Restart",
+      hint: "Tap / Click to swap gravity",
+      hint2: "Avoid the walls",
+      start: "Tap or Press Space to Start",
+      pause: "Pause"
+    },
+    ru: {
+      title: "Смена Импульса",
+      score: "Счёт",
+      best: "Рекорд",
+      play: "Играть",
+      gameover: "Игра окончена",
+      restart: "Тап или Пробел для рестарта",
+      hint: "Тап / Клик — сменить гравитацию",
+      hint2: "Избегайте стен",
+      start: "Тап или Пробел для старта",
+      pause: "Пауза"
+    }
+  };
+
+  function getLang() { return localStorage.getItem('game_lang') || 'en'; }
+  function setLang(l) { localStorage.setItem('game_lang', l); renderUI(); }
+  function t(key) { return i18n[getLang()][key] || i18n.en[key] || key; }
+  function toggleLang() { setLang(getLang() === 'en' ? 'ru' : 'en'); }
+
+  // ---------- DOM ----------
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('scoreEl');
+  const bestEl = document.getElementById('bestEl');
+  const startOverlay = document.getElementById('startOverlay');
+  const gameOverOverlay = document.getElementById('gameOverOverlay');
+  const finalScoreEl = document.getElementById('finalScoreEl');
+  const goBestEl = document.getElementById('goBestEl');
+  const langBtn = document.getElementById('langBtn');
+
+  // ---------- Canvas sizing ----------
+  let VW = 400, VH = 700; // logical (CSS) size
+  let DPR = 1;
+
+  function resize() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Fixed logical aspect ratio 9:16 -> portrait mobile-first, works on desktop too
+    const logicalW = 900;
+    const logicalH = 1600;
+    const aspect = logicalW / logicalH;
+    let w, h;
+    if (vw / vh > aspect) {
+      // viewport wider than aspect -> letterbox left/right
+      h = vh;
+      w = h * aspect;
+    } else {
+      w = vw;
+      h = w / aspect;
+    }
+    // Set drawing buffer with DPR for sharpness
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(logicalW * DPR);
+    canvas.height = Math.round(logicalH * DPR);
+    // CSS size matches logical aspect ratio exactly
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    // Scale context to logical coordinates
+    ctx.setTransform(DPR * (w / logicalW), 0, 0, DPR * (h / logicalH), 0, 0);
+    VW = logicalW;
+    VH = logicalH;
+  }
+
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', resize);
+
+  // ---------- Game state ----------
+  const STATE = { MENU: 0, PLAYING: 1, GAMEOVER: 2 };
+  let state = STATE.MENU;
+
+  let score = 0;
+  let best = parseInt(localStorage.getItem('momentum_best') || '0', 10);
+
+  // Player
+  const player = {
+    x: 0, y: 0,
+    vy: 0,
+    radius: 18,
+    gravityDir: 1, // 1 = down, -1 = up
+    alive: true
+  };
+
+  // World
+  let scrollSpeed = 0;
+  const baseSpeed = 320;
+  let walls = []; // {x, gapY, gapH, passed}
+  let particles = [];
+  let shake = 0;
+  let scorePopups = [];
+  let spawnTimer = 0;
+  let spawnInterval = 1.4; // seconds
+  let gameTime = 0;
+  let trail = [];
+
+  const WALL_WIDTH = 60;
+  const GAP_MIN = 220;
+  const GAP_MAX = 340;
+  const PLAY_TOP = 0;
+  const PLAY_BOTTOM = VH;
+
+  // ---------- Input ----------
+  let inputLocked = false;
+
+  function swapGravity() {
+    if (state === STATE.PLAYING) {
+      player.gravityDir *= -1;
+      player.vy = 0;
+      // Small burst effect
+      for (let i = 0; i < 6; i++) {
+        particles.push({
+          x: player.x, y: player.y,
+          vx: (Math.random() - 0.5) * 200,
+          vy: (Math.random() - 0.5) * 200,
+          life: 0.4, maxLife: 0.4,
+          color: '#00ffff', size: 3
+        });
+      }
+    } else if (state === STATE.MENU) {
+      startGame();
+    } else if (state === STATE.GAMEOVER) {
+      startGame();
+    }
+  }
+
+  function handleStart(e) {
+    if (e) e.preventDefault();
+    swapGravity();
+  }
+
+  // Keyboard
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'KeyW' || e.code === 'KeyS') {
+      e.preventDefault();
+      if (!e.repeat) swapGravity();
+    }
+  });
+
+  // Touch / Mouse on canvas and overlays (pointerdown handles both)
+  function attachPointer(el) {
+    el.addEventListener('pointerdown', handleStart, { passive: false });
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); }, { passive: false });
+  }
+  attachPointer(canvas);
+  attachPointer(startOverlay);
+  attachPointer(gameOverOverlay);
+
+  // Language button
+  langBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); toggleLang(); }, { passive: false });
+  langBtn.addEventListener('touchstart', (e) => { e.preventDefault(); e.stopPropagation(); toggleLang(); }, { passive: false });
+  langBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleLang(); });
+
+  // ---------- Game logic ----------
+  function resetGame() {
+    score = 0;
+    scrollSpeed = baseSpeed;
+    walls = [];
+    particles = [];
+    scorePopups = [];
+    trail = [];
+    spawnTimer = 0;
+    spawnInterval = 1.4;
+    gameTime = 0;
+    shake = 0;
+    player.x = 200;
+    player.y = VH / 2;
+    player.vy = 0;
+    player.gravityDir = 1;
+    player.alive = true;
+    updateScoreUI();
+  }
+
+  function startGame() {
+    resetGame();
+    state = STATE.PLAYING;
+    startOverlay.classList.add('hidden');
+    gameOverOverlay.classList.add('hidden');
+    inputLocked = false;
+  }
+
+  function gameOver() {
+    state = STATE.GAMEOVER;
+    player.alive = false;
+    shake = 14;
+    // Explosion particles
+    for (let i = 0; i < 30; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 100 + Math.random() * 300;
+      particles.push({
+        x: player.x, y: player.y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 0.8, maxLife: 0.8,
+        color: Math.random() < 0.5 ? '#ff00ff' : '#00ffff',
+        size: 4 + Math.random() * 4
+      });
+    }
+    if (score > best) {
+      best = score;
+      localStorage.setItem('momentum_best', best.toString());
+    }
+    finalScoreEl.textContent = score;
+    goBestEl.textContent = t('best') + ': ' + best;
+    updateScoreUI();
+    setTimeout(() => {
+      if (state === STATE.GAMEOVER) {
+        gameOverOverlay.classList.remove('hidden');
+      }
+    }, 400);
+  }
+
+  function updateScoreUI() {
+    scoreEl.textContent = t('score') + ': ' + score;
+    bestEl.textContent = t('best') + ': ' + best;
+  }
+
+  function spawnWall() {
+    const gapH = GAP_MIN + Math.random() * (GAP_MAX - GAP_MIN);
+    const gapY = 80 + Math.random() * (VH - gapH - 160);
+    walls.push({
+      x: VW + WALL_WIDTH,
+      gapY: gapY,
+      gapH: gapH,
+      passed: false
+    });
+  }
+
+  function circleRectCollide(cx, cy, r, rx, ry, rw, rh) {
+    const closestX = Math.max(rx, Math.min(cx, rx + rw));
+    const closestY = Math.max(ry, Math.min(cy, ry + rh));
+    const dx = cx - closestX;
+    const dy = cy - closestY;
+    return (dx * dx + dy * dy) < (r * r);
+  }
+
+  function update(dt) {
+    // Update particles always
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 200 * dt * (player.gravityDir);
+      p.life -= dt;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    for (let i = scorePopups.length - 1; i >= 0; i--) {
+      const s = scorePopups[i];
+      s.y -= 60 * dt;
+      s.life -= dt;
+      if (s.life <= 0) scorePopups.splice(i, 1);
+    }
+    if (shake > 0) shake = Math.max(0, shake - 40 * dt);
+
+    if (state !== STATE.PLAYING) return;
+
+    gameTime += dt;
+
+    // Difficulty ramp
+    scrollSpeed = baseSpeed + Math.min(gameTime * 12, 280);
+    spawnInterval = Math.max(0.55, 1.4 - gameTime * 0.025);
+
+    // Player physics
+    const gravity = 1800;
+    player.vy += gravity * player.gravityDir * dt;
+    player.y += player.vy * dt;
+
+    // Floor / ceiling collision
+    if (player.y - player.radius < PLAY_TOP) {
+      player.y = PLAY_TOP + player.radius;
+      player.vy = 0;
+    }
+    if (player.y + player.radius > PLAY_BOTTOM) {
+      player.y = PLAY_BOTTOM - player.radius;
+      player.vy = 0;
+    }
+
+    // Trail
+    trail.push({ x: player.x, y: player.y, life: 0.5 });
+    for (let i = trail.length - 1; i >= 0; i--) {
+      trail[i].life -= dt;
+      if (trail[i].life <= 0) trail.splice(i, 1);
+    }
+    if (trail.length > 40) trail.splice(0, trail.length - 40);
+
+    // Spawn walls
+    spawnTimer += dt;
+    if (spawnTimer >= spawnInterval) {
+      spawnTimer = 0;
+      spawnWall();
+    }
+
+    // Move walls
+    for (let i = walls.length - 1; i >= 0; i--) {
+      const w = walls[i];
+      w.x -= scrollSpeed * dt;
+
+      // Collision
+      const topRectY = 0;
+      const topRectH = w.gapY;
+      const botRectY = w.gapY + w.gapH;
+      const botRectH = VH - botRectY;
+
+      if (circleRectCollide(player.x, player.y, player.radius, w.x, topRectY, WALL_WIDTH, topRectH) ||
+          circleRectCollide(player.x, player.y, player.radius, w.x, botRectY, WALL_WIDTH, botRectH)) {
+        gameOver();
+        return;
+      }
+
+      // Score when passed
+      if (!w.passed && w.x + WALL_WIDTH < player.x) {
+        w.passed = true;
+        score++;
+        updateScoreUI();
+        scorePopups.push({ x: player.x, y: player.y - 30, life: 0.8, text: '+1' });
+        for (let j = 0; j < 5; j++) {
+          particles.push({
+            x: player.x, y: player.y,
+            vx: (Math.random() - 0.5) * 120,
+            vy: (Math.random() - 0.5) * 120,
+            life: 0.5, maxLife: 0.5,
+            color: '#ffff00', size: 2
+          });
+        }
+      }
+
+      // Remove offscreen
+      if (w.x + WALL_WIDTH < -50) walls.splice(i, 1);
+    }
+  }
+
+  // ---------- Rendering ----------
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, VH);
+    g.addColorStop(0, '#0a0a2a');
+    g.addColorStop(0.5, '#0f0f30');
+    g.addColorStop(1, '#0a0a2a');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, VH);
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(0,255,255,0.06)';
+    ctx.lineWidth = 1;
+    const gridSize = 80;
+    const offset = (gameTime * scrollSpeed * 0.3) % gridSize;
+    for (let x = -offset; x < VW; x += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, VH);
+      ctx.stroke();
+    }
+    for (let y = 0; y < VH; y += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(VW, y);
+      ctx.stroke();
+    }
+  }
+
+  function drawWalls() {
+    for (const w of walls) {
+      // Top wall
+      const topGrad = ctx.createLinearGradient(w.x, 0, w.x + WALL_WIDTH, 0);
+      topGrad.addColorStop(0, '#1a0033');
+      topGrad.addColorStop(0.5, '#330066');
+      topGrad.addColorStop(1, '#1a0033');
+      ctx.fillStyle = topGrad;
+      ctx.fillRect(w.x, 0, WALL_WIDTH, w.gapY);
+
+      // Bottom wall
+      const botY = w.gapY + w.gapH;
+      ctx.fillStyle = botGrad;
+      ctx.fillRect(w.x, botY, WALL_WIDTH, VH - botY);
+
+      // Neon edges
+      ctx.strokeStyle = '#ff00ff';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#ff00ff';
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.moveTo(w.x, w.gapY);
+      ctx.lineTo(w.x + WALL_WIDTH, w.gapY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(w.x, botY);
+      ctx.lineTo(w.x + WALL_WIDTH, botY);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  const botGrad = ctx.createLinearGradient(0, 0, 0, 100);
+
+  function drawPlayer() {
+    // Trail
+    for (let i = 0; i < trail.length; i++) {
+      const tr = trail[i];
+      const alpha = (tr.life / 0.5) * 0.3;
+      ctx.beginPath();
+      ctx.arc(tr.x, tr.y, player.radius * (tr.life / 0.5), 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0,255,255,${alpha})`;
+      ctx.fill();
+    }
+
+    if (!player.alive) return;
+
+    // Glow
+    ctx.shadowColor = '#00ffff';
+    ctx.shadowBlur = 25;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+    const pg = ctx.createRadialGradient(player.x - 5, player.y - 5, 2, player.x, player.y, player.radius);
+    pg.addColorStop(0, '#ffffff');
+    pg.addColorStop(0.5, '#00ffff');
+    pg.addColorStop(1, '#0088aa');
+    ctx.fillStyle = pg;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Inner ring
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius * 0.5, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const alpha = p.life / p.maxLife;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawScorePopups() {
+    ctx.font = 'bold 28px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    for (const s of scorePopups) {
+      const alpha = s.life / 0.8;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#ffff00';
+      ctx.shadowColor = '#ffff00';
+      ctx.shadowBlur = 10;
+      ctx.fillText(s.text, s.x, s.y);
+    }
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+  }
+
+  function render() {
+    ctx.save();
+    if (shake > 0) {
+      ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    }
+    drawBackground();
+    drawWalls();
+    drawParticles();
+    drawPlayer();
+    drawScorePopups();
+    ctx.restore();
+  }
+
+  // ---------- Main loop ----------
+  let lastTime = performance.now();
+  function loop(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- UI render ----------
+  function renderUI() {
+    document.getElementById('titleEl').textContent = t('title');
+    document.getElementById('hintEl').textContent = t('hint');
+    document.getElementById('hint2El').textContent = t('hint2');
+    document.getElementById('startBtnEl').textContent = t('start');
+    document.getElementById('goTitleEl').textContent = t('gameover');
+    document.getElementById('restartBtnEl').textContent = t('restart');
+    updateScoreUI();
+    goBestEl.textContent = t('best') + ': ' + best;
+  }
+
+  // ---------- Init ----------
+  resize();
+  resetGame();
+  renderUI();
+
+  // Fix botGrad after resize (uses VH)
+  function updateGradients() {
+    botGrad.addColorStop(0, '#1a0033');
+    botGrad.addColorStop(0.5, '#330066');
+    botGrad.addColorStop(1, '#1a0033');
+  }
+  // Recreate botGrad properly
+  const botGradRef = { addColorStop: () => {} };
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
