@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bomber Blitz</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            touch-action: none;
+        }
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            aspect-ratio: 1/1;
+            background: #000;
+            border: 4px solid #444;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(255,100,0,0.5);
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        #lang-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            border: 2px solid #ff6600;
+            border-radius: 50%;
+            width: 44px;
+            height: 44px;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s;
+        }
+        #lang-btn:active {
+            transform: scale(0.9);
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            text-shadow: 2px 2px 4px #000;
+            font-size: 24px;
+            text-align: center;
+        }
+        .hidden { display: none !important; }
+        #ui-overlay > div {
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            border: 3px solid #ff6600;
+            pointer-events: auto;
+            max-width: 90%;
+        }
+        #ui-overlay h1 {
+            color: #ffaa00;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        #ui-overlay p {
+            margin: 8px 0;
+            font-size: 18px;
+        }
+        #ui-overlay button {
+            margin-top: 15px;
+            padding: 12px 24px;
+            font-size: 20px;
+            font-family: inherit;
+            background: #ff6600;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        #ui-overlay button:active {
+            background: #cc5500;
+        }
+        /* Mobile controls */
+        #mobile-controls {
+            position: absolute;
+            bottom: 10px;
+            left: 0;
+            width: 100%;
+            display: none;
+            justify-content: space-between;
+            padding: 0 20px;
+            pointer-events: none;
+            z-index: 20;
+        }
+        #dpad {
+            display: grid;
+            grid-template-columns: 60px 60px 60px;
+            grid-template-rows: 60px 60px 60px;
+            gap: 4px;
+            pointer-events: auto;
+        }
+        .dpad-btn {
+            background: rgba(255,255,255,0.15);
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 12px;
+            color: #fff;
+            font-size: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            touch-action: none;
+        }
+        .dpad-btn:active {
+            background: rgba(255,255,255,0.4);
+        }
+        #bomb-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: rgba(255,50,50,0.4);
+            border: 3px solid rgba(255,100,100,0.7);
+            color: #fff;
+            font-size: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            cursor: pointer;
+            align-self: flex-end;
+            touch-action: none;
+        }
+        #bomb-btn:active {
+            background: rgba(255,50,50,0.8);
+        }
+        @media (pointer: coarse) {
+            #mobile-controls { display: flex; }
+        }
+        @media (max-width: 500px) {
+            #dpad {
+                grid-template-columns: 50px 50px 50px;
+                grid-template-rows: 50px 50px 50px;
+            }
+            #bomb-btn {
+                width: 70px;
+                height: 70px;
+                font-size: 30px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-overlay">
+            <div id="menu-screen">
+                <h1 id="title-text">Bomber Blitz</h1>
+                <p id="score-label">Score: 0</p>
+                <p id="best-label">Best: 0</p>
+                <button id="play-btn">Play</button>
+            </div>
+            <div id="gameover-screen" class="hidden">
+                <h1 id="gameover-text">Game Over</h1>
+                <p id="final-score-label">Score: 0</p>
+                <p id="best-score-label">Best: 0</p>
+                <button id="restart-btn">Restart</button>
+            </div>
+        </div>
+        <button id="lang-btn">🇬🇧/🇷🇺</button>
+        <div id="mobile-controls">
+            <div id="dpad">
+                <div></div>
+                <div class="dpad-btn" data-dir="up">▲</div>
+                <div></div>
+                <div class="dpad-btn" data-dir="left">◀</div>
+                <div></div>
+                <div class="dpad-btn" data-dir="right">▶</div>
+                <div></div>
+                <div class="dpad-btn" data-dir="down">▼</div>
+                <div></div>
+            </div>
+            <div id="bomb-btn">💣</div>
+        </div>
+    </div>
+    <script>
+        (function() {
+            // --- Localization ---
+            const i18n = {
+                en: {
+                    title: "Bomber Blitz",
+                    score: "Score",
+                    best: "Best",
+                    play: "Play",
+                    gameover: "Game Over",
+                    restart: "Restart",
+                    finalScore: "Final Score",
+                    bestScore: "Best Score"
+                },
+                ru: {
+                    title: "Бомбер Блиц",
+                    score: "Счёт",
+                    best: "Рекорд",
+                    play: "Играть",
+                    gameover: "Игра окончена",
+                    restart: "Заново",
+                    finalScore: "Ваш счёт",
+                    bestScore: "Рекорд"
+                }
+            };
+
+            function getLang() { return localStorage.getItem('game_lang') || 'en'; }
+            function setLang(l) { localStorage.setItem('game_lang', l); renderUI(); }
+            function t(key) { return i18n[getLang()][key] || i18n.en[key] || key; }
+            function toggleLang() { setLang(getLang() === 'en' ? 'ru' : 'en'); }
+
+            // --- UI Elements ---
+            const menuScreen = document.getElementById('menu-screen');
+            const gameoverScreen = document.getElementById('gameover-screen');
+            const titleText = document.getElementById('title-text');
+            const scoreLabel = document.getElementById('score-label');
+            const bestLabel = document.getElementById('best-label');
+            const playBtn = document.getElementById('play-btn');
+            const gameoverText = document.getElementById('gameover-text');
+            const finalScoreLabel = document.getElementById('final-score-label');
+            const bestScoreLabel = document.getElementById('best-score-label');
+            const restartBtn = document.getElementById('restart-btn');
+            const langBtn = document.getElementById('lang-btn');
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // --- Game Constants ---
+            const COLS = 15;
+            const ROWS = 15;
+            let TILE_SIZE = 0;
+            let CANVAS_SIZE = 0;
+
+            // Tile types
+            const EMPTY = 0;
+            const WALL = 1;
+            const DESTRUCTIBLE = 2;
+
+            // Directions
+            const DIR = {
+                up: { x: 0, y: -1 },
+                down: { x: 0, y: 1 },
+                left: { x: -1, y: 0 },
+                right: { x: 1, y: 0 }
+            };
+
+            // --- Game State ---
+            let state = {
+                running: false,
+                gameOver: false,
+                score: 0,
+                best: parseInt(localStorage.getItem('bomber_best') || '0'),
+                grid: [],
+                player: { x: 1, y: 1, bombCount: 1, bombRange: 1, speed: 0.15, invincible: 0 },
+                bombs: [],
+                explosions: [],
+                enemies: [],
+                powerups: [],
+                particles: [],
+                shake: { time: 0, intensity: 0 },
+                lastTime: 0,
+                accumulator: 0,
+                enemySpawnTimer: 0,
+                difficulty: 1
+            };
+
+            // --- Canvas Resize ---
+            function resizeCanvas() {
+                const container = document.getElementById('game-container');
+                const size = Math.min(container.clientWidth, container.clientHeight);
+                CANVAS_SIZE = size;
+                TILE_SIZE = size / COLS;
+                canvas.width = size;
+                canvas.height = size;
+            }
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+
+            // --- Input Handling ---
+            const keys = {};
+            const touchState = { up: false, down: false, left: false, right: false, bomb: false };
+
+            window.addEventListener('keydown', (e) => {
+                if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+                    e.preventDefault();
+                }
+                keys[e.key.toLowerCase()] = true;
+                if (e.key === ' ' && !state.running && !state.gameOver) startGame();
+                if (e.key === ' ' && state.gameOver) restartGame();
+            });
+            window.addEventListener('keyup', (e) => {
+                keys[e.key.toLowerCase()] = false;
+            });
+
+            // Mobile controls
+            document.querySelectorAll('.dpad-btn').forEach(btn => {
+                const dir = btn.dataset.dir;
+                const setDir = (val) => { touchState[dir] = val; };
+                btn.addEventListener('touchstart', (e) => { e.preventDefault(); setDir(true); });
+                btn.addEventListener('touchend', (e) => { e.preventDefault(); setDir(false); });
+                btn.addEventListener('touchcancel', (e) => { e.preventDefault(); setDir(false); });
+                btn.addEventListener('mousedown', (e) => { e.preventDefault(); setDir(true); });
+                btn.addEventListener('mouseup', (e) => { e.preventDefault(); setDir(false); });
+                btn.addEventListener('mouseleave', (e) => { setDir(false); });
+            });
+
+            const bombBtn = document.getElementById('bomb-btn');
+            bombBtn.addEventListener('touchstart', (e) => { e.preventDefault(); touchState.bomb = true; placeBomb(); });
+            bombBtn.addEventListener('touchend', (e) => { e.preventDefault(); touchState.bomb = false; });
+            bombBtn.addEventListener('mousedown', (e) => { e.preventDefault(); placeBomb(); });
+
+            // --- Game Logic ---
+            function initGrid() {
+                state.grid = [];
+                for (let y = 0; y < ROWS; y++) {
+                    const row = [];
+                    for (let x = 0; x < COLS; x++) {
+                        if (x === 0 || x === COLS - 1 || y === 0 || y === ROWS - 1) {
+                            row.push(WALL);
+                        } else if (x % 2 === 0 && y % 2 === 0) {
+                            row.push(WALL);
+                        } else {
+                            // Random destructible walls, but keep starting area clear
+                            if ((x <= 2 && y <= 2) || (x >= COLS-3 && y <= 2) || (x <= 2 && y >= ROWS-3) || (x >= COLS-3 && y >= ROWS-3)) {
+                                row.push(EMPTY);
+                            } else {
+                                row.push(Math.random() < 0.7 ? DESTRUCTIBLE : EMPTY);
+                            }
+                        }
+                    }
+                    state.grid.push(row);
+                }
+            }
+
+            function spawnEnemy() {
+                const corners = [
+                    { x: COLS - 2, y: 1 },
+                    { x: 1, y: ROWS - 2 },
+                    { x: COLS - 2, y: ROWS - 2 }
+                ];
+                const corner = corners[Math.floor(Math.random() * corners.length)];
+                if (state.grid[corner.y][corner.x] === EMPTY) {
+                    state.enemies.push({
+                        x: corner.x,
+                        y: corner.y,
+                        dir: 'left',
+                        moveTimer: 0,
+                        speed: 0.5 + state.difficulty * 0.1,
+                        color: `hsl(${Math.random() * 60 + 300}, 80%, 60%)`
+                    });
+                }
+            }
+
+            function placeBomb() {
+                if (!state.running) return;
+                const p = state.player;
+                if (state.bombs.filter(b => b.owner === 'player').length >= p.bombCount) return;
+                const bx = Math.round(p.x);
+                const by = Math.round(p.y);
+                if (state.bombs.some(b => b.x === bx && b.y === by)) return;
+                state.bombs.push({
+                    x: bx,
+                    y: by,
+                    timer: 2.0,
+                    range: p.bombRange,
+                    owner: 'player'
+                });
+                playSound(200, 0.1, 'square');
+            }
+
+            function explodeBomb(bomb) {
+                const { x, y, range } = bomb;
+                const affected = [{ x, y }];
+                // Up
+                for (let i = 1; i <= range; i++) {
+                    const nx = x, ny = y - i;
+                    if (ny < 0 || state.grid[ny][nx] === WALL) break;
+                    affected.push({ x: nx, y: ny });
+                    if (state.grid[ny][nx] === DESTRUCTIBLE) { state.grid[ny][nx] = EMPTY; addScore(10, nx, ny); break; }
+                }
+                // Down
+                for (let i = 1; i <= range; i++) {
+                    const nx = x, ny = y + i;
+                    if (ny >= ROWS || state.grid[ny][nx] === WALL) break;
+                    affected.push({ x: nx, y: ny });
+                    if (state.grid[ny][nx] === DESTRUCTIBLE) { state.grid[ny][nx] = EMPTY; addScore(10, nx, ny); break; }
+                }
+                // Left
+                for (let i = 1; i <= range; i++) {
+                    const nx = x - i, ny = y;
+                    if (nx < 0 || state.grid[ny][nx] === WALL) break;
+                    affected.push({ x: nx, y: ny });
+                    if (state.grid[ny][nx] === DESTRUCTIBLE) { state.grid[ny][nx] = EMPTY; addScore(10, nx, ny); break; }
+                }
+                // Right
+                for (let i = 1; i <= range; i++) {
+                    const nx = x + i, ny = y;
+                    if (nx >= COLS || state.grid[ny][nx] === WALL) break;
+                    affected.push({ x: nx, y: ny });
+                    if (state.grid[ny][nx] === DESTRUCTIBLE) { state.grid[ny][nx] = EMPTY; addScore(10, nx, ny); break; }
+                }
+                // Add explosion visuals
+                state.explosions.push({ cells: affected, timer: 0.5 });
+                // Check player hit
+                const p = state.player;
+                const px = Math.round(p.x), py = Math.round(p.y);
+                if (affected.some(c => c.x === px && c.y === py)) {
+                    if (p.invincible <= 0) {
+                        gameOver();
+                    }
+                }
+                // Check enemies
+                state.enemies = state.enemies.filter(e => {
+                    const ex = Math.round(e.x), ey = Math.round(e.y);
+                    if (affected.some(c => c.x === ex && c.y === ey)) {
+                        addScore(50, ex, ey);
+                        spawnParticles(ex, ey, '#ff6600', 15);
+                        return false;
+                    }
+                    return true;
+                });
+                // Check powerups (destroyed? no, keep)
+                // Chain reaction
+                state.bombs = state.bombs.filter(b => {
+                    if (b === bomb) return false;
+                    if (affected.some(c => c.x === b.x && c.y === b.y)) {
+                        b.timer = 0;
+                    }
+                    return true;
+                });
+                // Screen shake
+                state.shake.time = 0.3;
+                state.shake.intensity = 8;
+                playSound(80, 0.3, 'sawtooth');
+            }
+
+            function addScore(amount, x, y) {
+                state.score += amount * state.difficulty;
+                spawnParticles(x, y, '#ffaa00', 8);
+                // Score popup
+                state.particles.push({
+                    x: x + 0.5,
+                    y: y + 0.5,
+                    vx: 0,
+                    vy: -1.5,
+                    life: 1.0,
+                    maxLife: 1.0,
+                    color: '#ffaa00',
+                    size: 6,
+                    text: '+' + (amount * state.difficulty)
+                });
+            }
+
+            function spawnParticles(x, y, color, count) {
+                for (let i = 0; i < count; i++) {
+                    state.particles.push({
+                        x: x + 0.5,
+                        y: y + 0.5,
+                        vx: (Math.random() - 0.5) * 6,
+                        vy: (Math.random() - 0.5) * 6,
+                        life: 0.5 + Math.random() * 0.5,
+                        maxLife: 1.0,
+                        color: color,
+                        size: 3 + Math.random() * 5,
+                        text: null
+                    });
+                }
+            }
+
+            function spawnPowerup(x, y) {
+                const types = ['bomb', 'range', 'speed'];
+                const type = types[Math.floor(Math.random() * types.length)];
+                state.powerups.push({ x, y, type, timer: 0 });
+            }
+
+            function collectPowerup(powerup) {
+                const p = state.player;
+                if (powerup.type === 'bomb') p.bombCount = Math.min(p.bombCount + 1, 5);
+                if (powerup.type === 'range') p.bombRange = Math.min(p.bombRange + 1, 6);
+                if (powerup.type === 'speed') p.speed = Math.min(p.speed + 0.03, 0.3);
+                addScore(25, powerup.x, powerup.y);
+                spawnParticles(powerup.x, powerup.y, '#00ff00', 12);
+                playSound(600, 0.1, 'sine');
+            }
+
+            function canMove(x, y) {
+                if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return false;
+                if (state.grid[y][x] === WALL || state.grid[y][x] === DESTRUCTIBLE) return false;
+                if (state.bombs.some(b => b.x === x && b.y === y)) return false;
+                return true;
+            }
+
+            function updatePlayer(dt) {
+                const p = state.player;
+                if (p.invincible > 0) p.invincible -= dt;
+                let dx = 0, dy = 0;
+                if (keys['arrowup'] || keys['w'] || touchState.up) dy = -1;
+                else if (keys['arrowdown'] || keys['s'] || touchState.down) dy = 1;
+                else if (keys['arrowleft'] || keys['a'] || touchState.left) dx = -1;
+                else if (keys['arrowright'] || keys['d'] || touchState.right) dx = 1;
+
+                if (dx !== 0 || dy !== 0) {
+                    const moveSpeed = p.speed * 60 * dt;
+                    const targetX = p.x + dx * moveSpeed;
+                    const targetY = p.y + dy * moveSpeed;
+                    // Check horizontal movement
+                    if (dx !== 0) {
+                        const newX = p.x + dx * moveSpeed;
+                        const checkX = Math.round(newX);
+                        const checkY = Math.round(p.y);
+                        if (canMove(checkX, checkY)) {
+                            p.x = newX;
+                        } else {
+                            // Snap to grid
+                            p.x = Math.round(p.x);
+                        }
+                    }
+                    // Check vertical movement
+                    if (dy !== 0) {
+                        const newY = p.y + dy * moveSpeed;
+                        const checkX = Math.round(p.x);
+                        const checkY = Math.round(newY);
+                        if (canMove(checkX, checkY)) {
+                            p.y = newY;
+                        } else {
+                            p.y = Math.round(p.y);
+                        }
+                    }
+                }
+            }
+
+            function updateEnemies(dt) {
+                for (let enemy of state.enemies) {
+                    enemy.moveTimer -= dt;
+                    if (enemy.moveTimer <= 0) {
+                        // Choose a random valid direction
+                        const dirs = ['up', 'down', 'left', 'right'];
+                        const shuffled = dirs.sort(() => Math.random() - 0.5);
+                        for (let d of shuffled) {
+                            const dir = DIR[d];
+                            const nx = Math.round(enemy.x) + dir.x;
+                            const ny = Math.round(enemy.y) + dir.y;
+                            if (canMove(nx, ny)) {
+                                enemy.dir = d;
+                                break;
+                            }
+                        }
+                        enemy.moveTimer = 0.5 + Math.random() * 0.5;
+                    }
+                    const dir = DIR[enemy.dir];
+                    const moveSpeed = enemy.speed * 60 * dt;
+                    const newX = enemy.x + dir.x * moveSpeed;
+                    const newY = enemy.y + dir.y * moveSpeed;
+                    const checkX = Math.round(newX);
+                    const checkY = Math.round(newY);
+                    if (canMove(checkX, checkY)) {
+                        enemy.x = newX;
+                        enemy.y = newY;
+                    } else {
+                        enemy.moveTimer = 0;
+                    }
+                    // Check collision with player
+                    const p = state.player;
+                    if (Math.abs(enemy.x - p.x) < 0.8 && Math.abs(enemy.y - p.y) < 0.8) {
+                        if (p.invincible <= 0) {
+                            gameOver();
+                        }
+                    }
+                }
+            }
+
+            function updateBombs(dt) {
+                for (let bomb of state.bombs) {
+                    bomb.timer -= dt;
+                    if (bomb.timer <= 0) {
+                        explodeBomb(bomb);
+                        bomb.exploded = true;
+                    }
+                }
+                state.bombs = state.bombs.filter(b => !b.exploded);
+            }
+
+            function updateExplosions(dt) {
+                for (let exp of state.explosions) {
+                    exp.timer -= dt;
+                }
+                state.explosions = state.explosions.filter(e => e.timer > 0);
+            }
+
+            function updateParticles(dt) {
+                for (let p of state.particles) {
+                    p.x += p.vx * dt;
+                    p.y += p.vy * dt;
+                    if (p.text) {
+                        p.vy += 0.5 * dt;
+                    } else {
+                        p.vy += 5 * dt;
+                    }
+                    p.life -= dt;
+                }
+                state.particles = state.particles.filter(p => p.life > 0);
+            }
+
+            function updatePowerups(dt) {
+                for (let pu of state.powerups) {
+                    pu.timer += dt;
+                    const p = state.player;
+                    if (Math.abs(pu.x - p.x) < 0.8 && Math.abs(pu.y - p.y) < 0.8) {
+                        collectPowerup(pu);
+                        pu.collected = true;
+                    }
+                }
+                state.powerups = state.powerups.filter(p => !p.collected);
+            }
+
+            function updateShake(dt) {
+                if (state.shake.time > 0) {
+                    state.shake.time -= dt;
+                    if (state.shake.time <= 0) state.shake.intensity = 0;
+                }
+            }
+
+            // --- Sound (Web Audio API) ---
+            let audioCtx = null;
+            function playSound(freq, duration, type) {
+                try {
+                    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = type || 'square';
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    osc.start();
+                    osc.stop(audioCtx.currentTime + duration);
+                } catch(e) {}
+            }
+
+            // --- Rendering ---
+            function draw() {
+                ctx.save();
+                // Screen shake
+                if (state.shake.time > 0) {
+                    const shakeX = (Math.random() - 0.5) * state.shake.intensity;
+                    const shakeY = (Math.random() - 0.5) * state.shake.intensity;
+                    ctx.translate(shakeX, shakeY);
+                }
+
+                // Clear
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Draw grid
+                for (let y = 0; y < ROWS; y++) {
+                    for (let x = 0; x < COLS; x++) {
+                        const tile = state.grid[y][x];
+                        const px = x * TILE_SIZE;
+                        const py = y * TILE_SIZE;
+                        if (tile === WALL) {
+                            ctx.fillStyle = '#4a4a6a';
+                            ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                            ctx.fillStyle = '#5a5a7a';
+                            ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+                        } else if (tile === DESTRUCTIBLE) {
+                            ctx.fillStyle = '#8B4513';
+                            ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                            ctx.fillStyle = '#A0522D';
+                            ctx.fillRect(px + 3, py + 3, TILE_SIZE - 6, TILE_SIZE - 6);
+                            // Brick pattern
+                            ctx.fillStyle = '#6B3410';
+                            ctx.fillRect(px + TILE_SIZE/2 - 1, py + 2, 2, TILE_SIZE - 4);
+                            ctx.fillRect(px + 2, py + TILE_SIZE/2 - 1, TILE_SIZE - 4, 2);
+                        }
+                    }
+                }
+
+                // Draw powerups
+                for (let pu of state.powerups) {
+                    const px = pu.x * TILE_SIZE;
+                    const py = pu.y * TILE_SIZE;
+                    const pulse = Math.sin(pu.timer * 8) * 0.2 + 0.8;
+                    ctx.save();
+                    ctx.translate(px + TILE_SIZE/2, py + TILE_SIZE/2);
+                    ctx.scale(pulse, pulse);
+                    if (pu.type === 'bomb') {
+                        ctx.fillStyle = '#00aaff';
+                        ctx.beginPath();
+                        ctx.arc(0, 0, TILE_SIZE * 0.3, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.fillStyle = '#fff';
+                        ctx.font = `${TILE_SIZE * 0.4}px monospace`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText('B', 0, 1);
+                    } else if (pu.type === 'range') {
+                        ctx.fillStyle = '#ff6600';
+                        ctx.beginPath();
+                        ctx.arc(0, 0, TILE_SIZE * 0.3, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.fillStyle = '#fff';
+                        ctx.font = `${TILE_SIZE * 0.4}px monospace`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText('R', 0, 1);
+                    } else if (pu.type === 'speed') {
+                        ctx.fillStyle = '#00ff00';
+                        ctx.beginPath();
+                        ctx.arc(0, 0, TILE_SIZE * 0.3, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.fillStyle = '#fff';
+                        ctx.font = `${TILE_SIZE * 0.4}px monospace`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText('S', 0, 1);
+                    }
+                    ctx.restore();
+                }
+
+                // Draw bombs
+                for (let bomb of state.bombs) {
+                    const px = bomb.x * TILE_SIZE;
+                    const py = bomb.y * TILE_SIZE;
+                    const pulse = Math.sin((2.0 - bomb.timer) * 10) * 0.15 + 0.85;
+                    ctx.save();
+                    ctx.translate(px + TILE_SIZE/2, py + TILE_SIZE/2);
+                    ctx.scale(pulse, pulse);
+                    ctx.fillStyle = '#222';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, TILE_SIZE * 0.35, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#444';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, TILE_SIZE * 0.25, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Fuse
+                    ctx.strokeStyle = '#ffaa00';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(0, -TILE_SIZE * 0.35);
+                    ctx.lineTo(TILE_SIZE * 0.1, -TILE_SIZE * 0.5);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                // Draw explosions
+                for (let exp of state.explosions) {
+                    const alpha = exp.timer / 0.5;
+                    for (let cell of exp.cells) {
+                        const px = cell.x * TILE_SIZE;
+                        const py = cell.y * TILE_SIZE;
+                        ctx.fillStyle = `rgba(255, 150, 0, ${alpha})`;
+                        ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                        ctx.fillStyle = `rgba(255, 255, 200, ${alpha * 0.8})`;
+                        ctx.fillRect(px + TILE_SIZE*0.2, py + TILE_SIZE*0.2, TILE_SIZE*0.6, TILE_SIZE*0.6);
+                    }
+                }
+
+                // Draw enemies
+                for (let enemy of state.enemies) {
+                    const px = enemy.x * TILE_SIZE;
+                    const py = enemy.y * TILE_SIZE;
+                    ctx.fillStyle = enemy.color;
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE/2, py + TILE_SIZE/2, TILE_SIZE * 0.35, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Eyes
+                    ctx.fillStyle = '#fff';
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE*0.35, py + TILE_SIZE*0.4, TILE_SIZE*0.1, 0, Math.PI*2);
+                    ctx.arc(px + TILE_SIZE*0.65, py + TILE_SIZE*0.4, TILE_SIZE*0.1, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.fillStyle = '#000';
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE*0.35, py + TILE_SIZE*0.4, TILE_SIZE*0.05, 0, Math.PI*2);
+                    ctx.arc(px + TILE_SIZE*0.65, py + TILE_SIZE*0.4, TILE_SIZE*0.05, 0, Math.PI*2);
+                    ctx.fill();
+                }
+
+                // Draw player
+                const p = state.player;
+                const px = p.x * TILE_SIZE;
+                const py = p.y * TILE_SIZE;
+                if (p.invincible > 0 && Math.floor(p.invincible * 10) % 2 === 0) {
+                    // Blink
+                } else {
+                    ctx.fillStyle = '#00aaff';
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE/2, py + TILE_SIZE/2, TILE_SIZE * 0.4, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Helmet
+                    ctx.fillStyle = '#ff6600';
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE/2, py + TILE_SIZE*0.4, TILE_SIZE * 0.3, Math.PI, 0);
+                    ctx.fill();
+                    // Eyes
+                    ctx.fillStyle = '#fff';
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE*0.35, py + TILE_SIZE*0.55, TILE_SIZE*0.08, 0, Math.PI*2);
+                    ctx.arc(px + TILE_SIZE*0.65, py + TILE_SIZE*0.55, TILE_SIZE*0.08, 0, Math.PI*2);
+                    ctx.fill();
+                    ctx.fillStyle = '#000';
+                    ctx.beginPath();
+                    ctx.arc(px + TILE_SIZE*0.35, py + TILE_SIZE*0.55, TILE_SIZE*0.04, 0, Math.PI*2);
+                    ctx.arc(px + TILE_SIZE*0.65, py + TILE_SIZE*0.55, TILE_SIZE*0.04, 0, Math.PI*2);
+                    ctx.fill();
+                }
+
+                // Draw particles
+                for (let part of state.particles) {
+                    const alpha = part.life / part.maxLife;
+                    if (part.text) {
+                        ctx.fillStyle = `rgba(255, 170, 0, ${alpha})`;
+                        ctx.font = `bold ${part.size * 2}px monospace`;
+                        ctx.textAlign = 'center';
+                        ctx.fillText(part.text, part.x * TILE_SIZE, part.y * TILE_SIZE);
+                    } else {
+                        ctx.fillStyle = part.color;
+                        ctx.globalAlpha = alpha;
+                        ctx.beginPath();
+                        ctx.arc(part.x * TILE_SIZE, part.y * TILE_SIZE, part.size, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.globalAlpha = 1;
+                    }
+                }
+
+                // HUD
+                ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                ctx.fillRect(0, 0, canvas.width, 40);
+                ctx.fillStyle = '#ffaa00';
+                ctx.font = `bold ${Math.max(16, TILE_SIZE * 0.5)}px 'Courier New', monospace`;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(t('score') + ': ' + state.score, 10, 20);
+                ctx.textAlign = 'right';
+                ctx.fillText(t('best') + ': ' + state.best, canvas.width - 10, 20);
+
+                ctx.restore();
+            }
+
+            // --- Game Loop ---
+            function gameLoop(timestamp) {
+                if (!state.running) return;
+                const dt = Math.min((timestamp - state.lastTime) / 1000, 0.1);
+                state.lastTime = timestamp;
+
+                // Update
+                updatePlayer(dt);
+                updateEnemies(dt);
+                updateBombs(dt);
+                updateExplosions(dt);
+                updatePowerups(dt);
+                updateParticles(dt);
+                updateShake(dt);
+
+                // Spawn enemies over time
+                state.enemySpawnTimer -= dt;
+                if (state.enemySpawnTimer <= 0 && state.enemies.length < 5) {
+                    spawnEnemy();
+                    state.enemySpawnTimer = 5 - state.difficulty * 0.5;
+                }
+
+                // Spawn powerups randomly
+                if (Math.random() < 0.005 && state.powerups.length < 3) {
+                    // Find empty spot
+                    for (let i = 0; i < 20; i++) {
+                        const rx = Math.floor(Math.random() * (COLS - 2)) + 1;
+                        const ry = Math.floor(Math.random() * (ROWS - 2)) + 1;
+                        if (state.grid[ry][rx] === EMPTY && !state.bombs.some(b => b.x === rx && b.y === ry)) {
+                            spawnPowerup(rx, ry);
+                            break;
+                        }
+                    }
+                }
+
+                // Increase difficulty over time
+                state.difficulty = 1 + Math.floor(state.score / 500) * 0.5;
+
+                // Draw
+                draw();
+
+                requestAnimationFrame(gameLoop);
+            }
+
+            // --- UI Rendering ---
+            function renderUI() {
+                titleText.textContent = t('title');
+                scoreLabel.textContent = t('score') + ': ' + state.score;
+                bestLabel.textContent = t('best') + ': ' + state.best;
+                playBtn.textContent = t('play');
+                gameoverText.textContent = t('gameover');
+                finalScoreLabel.textContent = t('finalScore') + ': ' + state.score;
+                bestScoreLabel.textContent = t('bestScore') + ': ' + state.best;
+                restartBtn.textContent = t('restart');
+            }
+
+            // --- Game Start/Restart ---
+            function startGame() {
+                initGrid();
+                state.running = true;
+                state.gameOver = false;
+                state.score = 0;
+                state.player = { x: 1, y: 1, bombCount: 1, bombRange: 1, speed: 0.15, invincible: 1.0 };
+                state.bombs = [];
+                state.explosions = [];
+                state.enemies = [];
+                state.powerups = [];
+                state.particles = [];
+                state.shake = { time: 0, intensity: 0 };
+                state.lastTime = performance.now();
+                state.enemySpawnTimer = 3;
+                state.difficulty = 1;
+                // Spawn initial enemies
+                spawnEnemy();
+                spawnEnemy();
+                menuScreen.classList.add('hidden');
+                gameoverScreen.classList.add('hidden');
+                renderUI();
+                requestAnimationFrame(gameLoop);
+            }
+
+            function restartGame() {
+                startGame();
+            }
+
+            function gameOver() {
+                state.running = false;
+                state.gameOver = true;
+                if (state.score > state.best) {
+                    state.best = state.score;
+                    localStorage.setItem('bomber_best', state.best);
+                }
+                renderUI();
+                gameoverScreen.classList.remove('hidden');
+                playSound(100, 0.5, 'sawtooth');
+            }
+
+            // --- Event Listeners ---
+            playBtn.addEventListener('click', startGame);
+            playBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startGame(); });
+            restartBtn.addEventListener('click', restartGame);
+            restartBtn.addEventListener('touchstart', (e) => { e.preventDefault(); restartGame(); });
+            langBtn.addEventListener('click', toggleLang);
+            langBtn.addEventListener('touchstart', (e) => { e.preventDefault(); toggleLang(); });
+
+            // Prevent scrolling on touch
+            document.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
+
+            // Initial UI
+            renderUI();
+
+            // Initial draw
+            initGrid();
+            draw();
+        })();
+    </script>
+</body>
+</html>
