@@ -1,0 +1,658 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>The Ashen Vault</title>
+<style>
+  html,body{margin:0;padding:0;background:#05070a;overflow:hidden;height:100%;font-family:'Courier New',monospace;touch-action:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block;box-shadow:0 0 40px #000 inset;touch-action:none;max-width:100%;max-height:100%;}
+  #hint{position:fixed;bottom:6px;left:0;right:0;text-align:center;color:#3a4a55;font-size:11px;pointer-events:none;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="256" height="224"></canvas></div>
+<div id="hint">Arrows/WASD + Enter/Tap</div>
+<script>
+(function(){
+"use strict";
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+const W=256,H=224;
+
+// ---------- Input ----------
+const keys={};
+let tapQueue=[];
+addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();
+  keys[e.key.toLowerCase()]=true;
+  if(e.key==='Enter'||e.key===' '){tapQueue.push({x:-1,y:-1,key:true});}
+  if(e.key==='Escape'){toggleMenu();}
+},{passive:false});
+addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
+
+function getPos(ev){
+  const r=cv.getBoundingClientRect();
+  const t=ev.touches?ev.touches[0]:ev;
+  return {x:(t.clientX-r.left)*(W/r.width), y:(t.clientY-r.top)*(H/r.height)};
+}
+cv.addEventListener('mousedown',e=>{const p=getPos(e);tapQueue.push(p);});
+cv.addEventListener('touchstart',e=>{e.preventDefault();const p=getPos(e);tapQueue.push(p);},{passive:false});
+
+// ---------- Audio (tiny synth) ----------
+let AC=null;
+function beep(freq,dur,type,vol){
+  try{
+    if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)();
+    const o=AC.createOscillator(),g=AC.createGain();
+    o.type=type||'square';o.frequency.value=freq;
+    g.gain.value=vol||0.04;
+    g.gain.exponentialRampToValueAtTime(0.0001,AC.currentTime+dur);
+    o.connect(g);g.connect(AC.destination);
+    o.start();o.stop(AC.currentTime+dur);
+  }catch(e){}
+}
+
+// ---------- Palette ----------
+const C={
+  bg0:'#05070a', bg1:'#0a1016', bg2:'#121c24',
+  iron0:'#1c2830', iron1:'#2a3a44', iron2:'#3e5460',
+  water0:'#0d1a22', water1:'#16303c', water2:'#1e4a5a',
+  rust0:'#4a2a1a', rust1:'#6a3a22', rust2:'#8a5030',
+  glow0:'#2a4a3a', glow1:'#4a8a6a', glow2:'#7acaa0',
+  amber0:'#4a3a1a', amber1:'#8a6a2a', amber2:'#dab050',
+  red0:'#3a1010', red1:'#8a2020', red2:'#e04030',
+  cyan0:'#103040', cyan1:'#2080a0', cyan2:'#60d0e0',
+  bone0:'#5a5a50', bone1:'#8a8a7a', bone2:'#c0c0b0',
+  white:'#e8f0e0', black:'#000000'
+};
+
+// ---------- Game State ----------
+const G={
+  scene:'title', // title, intro, hub, seal, dialogue, ending, menu
+  prevScene:null,
+  time:0,
+  sealsSolved:0,
+  sealsTotal:7,
+  currentSeal:0,
+  memory:{name:false,crime:false,truth:false},
+  flags:{},
+  dialogue:null,
+  dialogueIndex:0,
+  dialogueChars:0,
+  choices:null,
+  choiceIndex:0,
+  particles:[],
+  parallax:0,
+  transition:0,
+  transitionDir:0,
+  menuOpen:false,
+  ending:'',
+  puzzleState:null,
+  hubPos:{x:0,y:0},
+  cameraY:0,
+  shakeT:0,
+  glitchT:0
+};
+
+// ---------- Seals definition ----------
+const SEALS=[
+  {id:0,name:'SEAL I — THE LOCKER',type:'pattern',
+   prompt:'Four dials. The dead left a pattern in rust.',
+   solution:[2,0,3,1],hint:'Rust streaks: 3,1,4,2. Subtract one.'},
+  {id:1,name:'SEAL II — THE VALVES',type:'valves',
+   prompt:'Open pipes so water flows left to right.',
+   solution:[1,0,1,0,1],hint:'Alternate. Water finds its own level.'},
+  {id:2,name:'SEAL III — THE NAMES',type:'memory',
+   prompt:'Which name was scratched out?',
+   choices:['MARA VOSS','YOUR OWN','THE ENGINEER','NOBODY'],
+   correct:1,hint:'You remember nothing. Why is your name gone?'},
+  {id:3,name:'SEAL IV — THE WEIGHT',type:'balance',
+   prompt:'Balance the scales. Truth is heavier than grief.',
+   solution:[3,1,2],hint:'Sum both sides equal.'},
+  {id:4,name:'SEAL V — THE CODE',type:'code',
+   prompt:'A keypad. Four digits. The AI whispers numbers.',
+   code:'0417',hint:'The date the vault sank. April 17th.'},
+  {id:5,name:'SEAL VI — THE CHOICE',type:'moral',
+   prompt:'CONDUIT asks: Do you remember killing them?',
+   choices:['YES','NO','I CHOOSE NOT TO REMEMBER'],
+   correct:2,hint:'Some truths you must refuse.'},
+  {id:6,name:'SEAL VII — THE MIRROR',type:'final',
+   prompt:'The final seal is you.',
+   choices:['OPEN THE VAULT','SEAL YOURSELF IN','DROWN WITH THE TRUTH'],
+   correct:0,hint:'You were always the door.'}
+];
+
+// ---------- Dialogue Scripts ----------
+const SCRIPTS={
+  intro:[
+    {who:'???',text:'...water. Cold iron. Your lungs burn.'},
+    {who:'???',text:'You open your eyes. Darkness. A dim amber light pulses ahead.'},
+    {who:'CONDUIT',text:'Ah. You are awake. Good. I was beginning to think the pressure took you.'},
+    {who:'CONDUIT',text:'I am CONDUIT. I maintain this vault. I am... failing.'},
+    {who:'YOU',text:'Where am I? Who am I?'},
+    {who:'CONDUIT',text:'The Ashen Vault. And you... you are the reason it exists.'},
+    {who:'CONDUIT',text:'Seven seals bind this place. Break them, and your memory returns.'},
+    {who:'CONDUIT',text:'But be warned. Memory is not always a gift.'},
+    {who:'YOU',text:'I have no choice.'},
+    {who:'CONDUIT',text:'No. You never did.'}
+  ],
+  hubIntro:[
+    {who:'CONDUIT',text:'Seven chambers. Seven seals. Walk to a lit door.'},
+    {who:'CONDUIT',text:'Some are puzzles. Some are questions. All are yours.'}
+  ],
+  sealSolved:[
+    {who:'CONDUIT',text:'The seal breaks. A memory surfaces...'},
+    {who:'MEMORY',text:'[A child laughing. A hand letting go. Iron closing.]'},
+    {who:'CONDUIT',text:'Do you feel it? That is you. Piece by piece.'}
+  ],
+  finalReveal:[
+    {who:'CONDUIT',text:'You solved them all. Now you know.'},
+    {who:'CONDUIT',text:'You built this vault. You locked them in. You forgot on purpose.'},
+    {who:'YOU',text:'I... I did this?'},
+    {who:'CONDUIT',text:'Yes. And now the question is not what you remember.'},
+    {who:'CONDUIT',text:'It is what you do with it.'}
+  ]
+};
+
+// ---------- Particles ----------
+function spawnParticle(x,y,color,vx,vy,life){
+  G.particles.push({x,y,vx:vx||0,vy:vy||0,life:life||30,maxLife:life||30,color});
+}
+function burst(x,y,color,n){
+  for(let i=0;i<(n||8);i++){
+    const a=Math.random()*Math.PI*2,s=Math.random()*1.5+0.3;
+    spawnParticle(x,y,color,Math.cos(a)*s,Math.sin(a)*s,20+Math.random()*20);
+  }
+}
+
+// ---------- Screen transitions ----------
+function goScene(s){
+  G.prevScene=G.scene;
+  G.scene=s;
+  G.transition=1;
+}
+
+// ---------- Dialogue ----------
+function startDialogue(key,onEnd){
+  G.dialogue=SCRIPTS[key].slice();
+  G.dialogueIndex=0;
+  G.dialogueChars=0;
+  G.dialogueEnd=onEnd||null;
+  G.prevScene=G.scene;
+  G.scene='dialogue';
+  G.choiceIndex=0;
+}
+function advanceDialogue(){
+  if(!G.dialogue)return;
+  const line=G.dialogue[G.dialogueIndex];
+  if(G.dialogueChars<line.text.length){
+    G.dialogueChars=line.text.length;
+    return;
+  }
+  G.dialogueIndex++;
+  G.dialogueChars=0;
+  if(G.dialogueIndex>=G.dialogue.length){
+    const cb=G.dialogueEnd;
+    G.dialogue=null;G.dialogueEnd=null;
+    if(cb)cb();else goScene(G.prevScene||'hub');
+  }
+}
+
+// ---------- Text wrapping ----------
+function wrapText(text,maxChars){
+  const words=text.split(' ');const lines=[];let cur='';
+  for(const w of words){
+    if((cur+' '+w).trim().length>maxChars){lines.push(cur);cur=w;}
+    else cur=(cur+' '+w).trim();
+  }
+  if(cur)lines.push(cur);
+  return lines;
+}
+
+// ---------- Pixel font (built-in via canvas) ----------
+function text(str,x,y,color,size){
+  ctx.fillStyle=color||C.white;
+  ctx.font=(size||8)+'px monospace';
+  ctx.textAlign='left';
+  ctx.textBaseline='top';
+  ctx.fillText(str,x,y);
+}
+
+// ---------- Drawing helpers ----------
+function rect(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(x|0,y|0,w|0,h|0);}
+function px(x,y,c){ctx.fillStyle=c;ctx.fillRect(x|0,y|0,1,1);}
+
+function drawGradientRect(x,y,w,h,c1,c2,vertical){
+  const g=vertical?ctx.createLinearGradient(x,y,x,y+h):ctx.createLinearGradient(x,y,x+w,y);
+  g.addColorStop(0,c1);g.addColorStop(1,c2);
+  ctx.fillStyle=g;ctx.fillRect(x|0,y|0,w|0,h|0);
+}
+
+// ---------- Background: pseudo-3D vault corridor ----------
+function drawVaultBg(offset){
+  // deep background
+  rect(0,0,W,H,C.bg0);
+  // far wall gradient
+  drawGradientRect(0,0,W,H,C.bg1,C.bg0,true);
+  // water line
+  const wl=H-70;
+  drawGradientRect(0,wl,W,H-wl,C.water1,C.water0,true);
+  // iron arches (3 layers of parallax)
+  for(let layer=0;layer<3;layer++){
+    const scale=1-layer*0.28;
+    const par=offset*(0.3+layer*0.35);
+    const yBase=H-40-layer*18;
+    const archH=140*scale;
+    const archW=110*scale;
+    const cx=W/2+par;
+    ctx.strokeStyle=layer===0?C.iron0:layer===1?C.iron1:C.iron2;
+    ctx.lineWidth=layer===0?3:layer===1?2:1;
+    // arch
+    ctx.beginPath();
+    ctx.moveTo(cx-archW/2,yBase);
+    ctx.lineTo(cx-archW/2,yBase-archH*0.6);
+    ctx.quadraticCurveTo(cx,yBase-archH*1.05,cx+archW/2,yBase-archH*0.6);
+    ctx.lineTo(cx+archW/2,yBase);
+    ctx.stroke();
+    // vertical pillars
+    ctx.beginPath();
+    ctx.moveTo(cx-archW/2,yBase);ctx.lineTo(cx-archW/2,yBase+30);
+    ctx.moveTo(cx+archW/2,yBase);ctx.lineTo(cx+archW/2,yBase+30);
+    ctx.stroke();
+  }
+  // water reflection shimmer
+  for(let i=0;i<40;i++){
+    const x=(i*13+Math.sin(G.time*0.02+i)*8+offset*0.5)%W;
+    const y=wl+((i*7)%(H-wl));
+    px(x,y,C.water2);
+  }
+  // drips
+  for(let i=0;i<3;i++){
+    const t=(G.time*0.4+i*40)%120;
+    const x=40+i*80;
+    if(t<100)px(x,t,C.cyan1);
+  }
+}
+
+// ---------- Title Screen ----------
+function drawTitle(){
+  drawVaultBg(0);
+  // vignette
+  const g=ctx.createRadialGradient(W/2,H/2,20,W/2,H/2,180);
+  g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,0.8)');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  // title glow
+  ctx.shadowColor=C.glow2;ctx.shadowBlur=12;
+  text('THE ASHEN VAULT',36,60,C.glow2,16);
+  ctx.shadowBlur=0;
+  text('— a memory puzzle —',70,84,C.iron2,8);
+  // blinking prompt
+  if(Math.floor(G.time/30)%2===0){
+    text('PRESS ENTER / TAP TO DESCEND',40,150,C.amber2,8);
+  }
+  text('v1.0  ·  seven seals await',72,200,C.iron1,8);
+}
+
+// ---------- Hub ----------
+function drawHub(){
+  drawVaultBg(G.parallax);
+  // corridor floor
+  drawGradientRect(0,H-40,W,40,C.iron0,C.bg0,true);
+  // seven doors, arranged in an arc (pseudo-3D perspective)
+  for(let i=0;i<7;i++){
+    const t=i-3;
+    const dx=t*32+G.parallax*0.5;
+    const depth=Math.abs(t);
+    const scale=1-depth*0.08;
+    const dw=26*scale, dh=48*scale;
+    const x=W/2+dx-dw/2;
+    const y=H-90-depth*4;
+    const solved=i<G.sealsSolved;
+    const isCurrent=i===G.sealsSolved;
+    // door frame
+    rect(x-2,y-2,dw+4,dh+4,C.iron0);
+    // door body
+    if(solved){
+      drawGradientRect(x,y,dw,dh,C.glow0,C.glow1,true);
+    }else if(isCurrent){
+      const pulse=Math.sin(G.time*0.1)*0.2+0.8;
+      ctx.globalAlpha=pulse;
+      drawGradientRect(x,y,dw,dh,C.amber0,C.amber1,true);
+      ctx.globalAlpha=1;
+    }else{
+      drawGradientRect(x,y,dw,dh,C.iron0,C.iron1,true);
+    }
+    // seal number
+    ctx.fillStyle=solved?C.glow2:isCurrent?C.amber2:C.iron2;
+    ctx.font='6px monospace';
+    ctx.textAlign='center';
+    ctx.fillText((i+1).toString(),x+dw/2,y+dh/2-3);
+    ctx.textAlign='left';
+    // lock icon if unsolved
+    if(!solved){
+      ctx.strokeStyle=isCurrent?C.amber2:C.iron2;
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.arc(x+dw/2,y+dh/2+6,3,Math.PI,0);
+      ctx.stroke();
+      rect(x+dw/2-4,y+dh/2+6,8,6,isCurrent?C.amber1:C.iron1);
+    }
+  }
+  // player indicator (small figure)
+  const px_=W/2+G.parallax*0.5;
+  const py_=H-50;
+  rect(px_-2,py_-8,4,8,C.bone2);
+  rect(px_-2,py_-12,4,4,C.bone1);
+  // HUD
+  text('SEALS: '+G.sealsSolved+' / 7',6,6,C.cyan2,8);
+  text('CONDUIT ONLINE',W-90,6,C.glow2,8);
+  // memory fragments
+  if(G.memory.name)text('◆ NAME',6,18,C.glow2,8);
+  if(G.memory.crime)text('◆ CRIME',6,28,C.red2,8);
+  if(G.memory.truth)text('◆ TRUTH',6,38,C.amber2,8);
+  // hint
+  if(Math.floor(G.time/40)%2===0)
+    text('◄ ► SELECT DOOR   ENTER TO ENTER',34,H-10,C.iron2,8);
+}
+
+// ---------- Seal Puzzles ----------
+function drawSealScene(){
+  drawVaultBg(0);
+  const s=SEALS[G.currentSeal];
+  // header
+  drawGradientRect(0,0,W,24,C.iron0,C.iron1,true);
+  text(s.name,6,6,C.amber2,10);
+  text('SEAL '+(G.currentSeal+1)+'/7',W-60,8,C.iron2,8);
+  // prompt
+  const lines=wrapText(s.prompt,42);
+  lines.forEach((l,i)=>text(l,10,34+i*11,C.bone2,8));
+  // puzzle-specific
+  if(s.type==='pattern')drawPatternPuzzle(s);
+  else if(s.type==='valves')drawValvesPuzzle(s);
+  else if(s.type==='memory')drawChoicePuzzle(s);
+  else if(s.type==='balance')drawBalancePuzzle(s);
+  else if(s.type==='code')drawCodePuzzle(s);
+  else if(s.type==='moral')drawChoicePuzzle(s);
+  else if(s.type==='final')drawChoicePuzzle(s);
+  // back
+  text('[ESC] BACK',6,H-10,C.iron2,8);
+}
+
+let puzzle={};
+function initPuzzle(s){
+  puzzle={};
+  if(s.type==='pattern'){puzzle.dials=[0,0,0,0];puzzle.sel=0;}
+  if(s.type==='valves'){puzzle.valves=[0,0,0,0,0];puzzle.sel=0;}
+  if(s.type==='balance'){puzzle.weights=[1,1,1];puzzle.sel=0;}
+  if(s.type==='code'){puzzle.code='';}
+  puzzle.msg='';puzzle.msgT=0;
+  puzzle.solved=false;
+}
+
+function checkPuzzle(s){
+  if(s.type==='pattern'){
+    if(JSON.stringify(puzzle.dials)===JSON.stringify(s.solution))return true;
+  }
+  if(s.type==='valves'){
+    if(JSON.stringify(puzzle.valves)===JSON.stringify(s.solution))return true;
+  }
+  if(s.type==='balance'){
+    // sum of left two weights equals solution[0], etc — simplified: weights match
+    if(JSON.stringify(puzzle.weights)===JSON.stringify(s.solution))return true;
+  }
+  if(s.type==='code'){
+    if(puzzle.code===s.code)return true;
+  }
+  return false;
+}
+
+function drawPatternPuzzle(s){
+  const baseY=90;
+  for(let i=0;i<4;i++){
+    const x=40+i*48;
+    const v=puzzle.dials[i];
+    const sel=puzzle.sel===i;
+    // dial frame
+    ctx.strokeStyle=sel?C.amber2:C.iron2;
+    ctx.lineWidth=sel?2:1;
+    ctx.strokeRect(x-14,baseY-14,28,28);
+    // dial value
+    const colors=[C.iron1,C.rust0,C.rust2,C.glow1];
+    rect(x-10,baseY-10,20,20,colors[v]);
+    // digit
+    ctx.fillStyle=C.white;ctx.font='12px monospace';ctx.textAlign='center';
+    ctx.fillText(v.toString(),x,baseY-6);
+    ctx.textAlign='left';
+    // ticks
+    for(let t=0;t<4;t++){
+      const a=t*Math.PI/2-Math.PI/2;
+      const tx=x+Math.cos(a)*16,ty=baseY+Math.sin(a)*16;
+      px(tx,ty,C.iron2);
+    }
+  }
+  text('◄ ► SELECT   ▲ ▼ CHANGE',60,140,C.bone1,8);
+  text('ENTER TO TEST',86,154,C.bone1,8);
+  if(puzzle.msgT>0){text(puzzle.msg,W/2-30,170,C.red2,8);}
+}
+
+function drawValvesPuzzle(s){
+  for(let i=0;i<5;i++){
+    const x=30+i*40;
+    const open=puzzle.valves[i];
+    const sel=puzzle.sel===i;
+    // pipe
+    rect(x,100,30,10,C.iron1);
+    // valve
+    ctx.strokeStyle=sel?C.amber2:C.iron2;
+    ctx.lineWidth=sel?2:1;
+    ctx.strokeRect(x+6,90,18,18);
+    // handle
+    rect(x+13,96,4,6,open?C.glow1:C.red1);
+    // water
+    if(open)rect(x,103,30,4,C.cyan1);
+  }
+  text('◄ ► SELECT   ENTER TOGGLE',56,140,C.bone1,8);
+  if(puzzle.msgT>0){text(puzzle.msg,W/2-30,170,C.red2,8);}
+}
+
+function drawChoicePuzzle(s){
+  const choices=s.choices;
+  for(let i=0;i<choices.length;i++){
+    const y=90+i*20;
+    const sel=puzzle.sel===i;
+    if(sel){rect(36,y-2,W-72,16,C.iron1);}
+    text((sel?'► ':'  ')+choices[i],40,y,C.bone2,10);
+  }
+  text('◄ ► SELECT   ENTER TO ANSWER',56,180,C.bone1,8);
+  if(puzzle.msgT>0){text(puzzle.msg,W/2-30,200,C.red2,8);}
+}
+
+function drawBalancePuzzle(s){
+  // scale visualization
+  const cx=W/2,cy=110;
+  const leftSum=puzzle.weights[0]+puzzle.weights[1];
+  const rightSum=puzzle.weights[2];
+  const tilt=Math.max(-1,Math.min(1,(rightSum-leftSum)*0.5));
+  ctx.save();
+  ctx.translate(cx,cy);
+  ctx.rotate(tilt*0.3);
+  // beam
+  ctx.strokeStyle=C.iron2;ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(-50,0);ctx.lineTo(50,0);ctx.stroke();
+  // pans
+  rect(-56,0,12,4,C.iron1);
+  rect(44,0,12,4,C.iron1);
+  ctx.restore();
+  // weights
+  for(let i=0;i<3;i++){
+    const x=60+i*50,y=160;
+    const sel=puzzle.sel===i;
+    ctx.strokeStyle=sel?C.amber2:C.iron2;
+    ctx.lineWidth=sel?2:1;
+    ctx.strokeRect(x-12,y-12,24,24);
+    ctx.fillStyle=C.rust2;ctx.font='12px monospace';ctx.textAlign='center';
+    ctx.fillText(puzzle.weights[i].toString(),x,y-4);
+    ctx.textAlign='left';
+  }
+  text('◄ ► SELECT   ▲ ▼ WEIGHT',56,190,C.bone1,8);
+  text('ENTER TO PLACE',86,202,C.bone1,8);
+}
+
+function drawCodePuzzle(s){
+  // keypad
+  const x0=88,y0=90;
+  for(let i=0;i<9;i++){
+    const x=x0+(i%3)*24,y=y0+Math.floor(i/3)*24;
+    rect(x,y,20,20,C.iron1);
+    ctx.strokeStyle=C.iron2;ctx.lineWidth=1;
+    ctx.strokeRect(x,y,20,20);
+    ctx.fillStyle=C.bone2;ctx.font='10px monospace';ctx.textAlign='center';
+    ctx.fillText((i+1).toString(),x+10,y+6);
+    ctx.textAlign='left';
+  }
+  rect(x0+72,y0,20,20,C.iron1);ctx.strokeRect(x0+72,y0,20,20);
+  ctx.fillStyle=C.bone2;ctx.font='10px monospace';ctx.textAlign='center';
+  ctx.fillText('0',x0+82,y0+6);ctx.textAlign='left';
+  // display
+  rect(88,64,72,18,C.black);
+  ctx.strokeStyle=C.glow1;ctx.strokeRect(88,64,72,18);
+  ctx.fillStyle=C.glow2;ctx.font='12px monospace';ctx.textAlign='center';
+  ctx.fillText(puzzle.code.padEnd(4,'_'),124,68);
+  ctx.textAlign='left';
+  text('TAP DIGITS   [BACKSPACE] CLEAR',60,180,C.bone1,8);
+  if(puzzle.msgT>0){text(puzzle.msg,W/2-30,196,C.red2,8);}
+}
+
+// ---------- Dialogue drawing ----------
+function drawDialogue(){
+  drawVaultBg(0);
+  // dim
+  ctx.fillStyle='rgba(0,0,0,0.55)';ctx.fillRect(0,0,W,H);
+  const line=G.dialogue[G.dialogueIndex];
+  // portrait box
+  drawGradientRect(8,8,W-16,40,C.iron0,C.iron1,true);
+  ctx.strokeStyle=C.amber1;ctx.lineWidth=1;ctx.strokeRect(8,8,W-16,40);
+  // speaker
+  ctx.fillStyle=line.who==='CONDUIT'?C.glow2:line.who==='MEMORY'?C.amber2:C.cyan2;
+  ctx.font='10px monospace';ctx.textAlign='left';
+  ctx.fillText(line.who,16,14);
+  // text box
+  drawGradientRect(8,H-70,W-16,62,C.black,C.iron0,true);
+  ctx.strokeStyle=C.iron2;ctx.strokeRect(8,H-70,W-16,62);
+  // wrapped text with typewriter
+  const full=line.text.slice(0,G.dialogueChars);
+  const lines=wrapText(full,42);
+  ctx.fillStyle=C.white;ctx.font='8px monospace';
+  lines.forEach((l,i)=>ctx.fillText(l,16,H-62+i*12));
+  // next arrow
+  if(G.dialogueChars>=line.text.length&&Math.floor(G.time/20)%2===0){
+    ctx.fillStyle=C.amber2;ctx.beginPath();
+    ctx.moveTo(W-20,H-16);ctx.lineTo(W-14,H-16);ctx.lineTo(W-17,H-11);
+    ctx.fill();
+  }
+}
+
+// ---------- Ending ----------
+function drawEnding(){
+  drawVaultBg(0);
+  ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(0,0,W,H);
+  text('THE VAULT OPENS',56,50,C.glow2,14);
+  text('You step into light you have not seen',20,80,C.bone2,8);
+  text('in years. The water recedes. The iron',20,92,C.bone2,8);
+  text('groans. Behind you, CONDUIT falls silent.',20,104,C.bone2,8);
+  text('You remember everything now.',20,124,C.amber2,8);
+  text('You remember why you chose to forget.',20,136,C.amber2,8);
+  text('Whether that is forgiveness or escape',20,156,C.bone1,8);
+  text('is a question only you can answer.',20,168,C.bone1,8);
+  if(Math.floor(G.time/30)%2===0)
+    text('ENTER TO RETURN TO THE SURFACE',36,200,C.cyan2,8);
+}
+
+// ---------- Update ----------
+function update(){
+  G.time++;
+  if(G.transition>0)G.transition-=0.08;
+  if(G.glitchT>0)G.glitchT--;
+  // particles
+  for(let i=G.particles.length-1;i>=0;i--){
+    const p=G.particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.life--;
+    if(p.life<=0)G.particles.splice(i,1);
+  }
+  // input
+  const left=keys['arrowleft']||keys['a'];
+  const right=keys['arrowright']||keys['d'];
+  const up=keys['arrowup']||keys['w'];
+  const down=keys['arrowdown']||keys['s'];
+  const enter=keys['enter']||keys[' '];
+
+  const tap=tapQueue.shift();
+
+  if(G.scene==='title'){
+    if(tap||enter){goScene('intro');startDialogue('intro',()=>{goScene('hub');startDialogue('hubIntro',()=>{goScene('hub');});});}
+  }
+  else if(G.scene==='dialogue'){
+    if(G.dialogue){
+      const line=G.dialogue[G.dialogueIndex];
+      if(G.dialogueChars<line.text.length){
+        G.dialogueChars+=2;
+        if(G.time%3===0)beep(400+Math.random()*200,0.02,'square',0.01);
+      } else if(tap||enter){
+        advanceDialogue();
+        beep(600,0.05,'square',0.02);
+      }
+    }
+  }
+  else if(G.scene==='hub'){
+    if(left)G.parallax+=1.2;
+    if(right)G.parallax-=1.2;
+    // door select via up/down? Use parallax to pick nearest door — simpler: tap on door.
+    // We'll use number keys 1-7 OR tap door.
+    if(tap){
+      // find door under tap
+      for(let i=0;i<7;i++){
+        const t=i-3;
+        const dx=t*32+G.parallax*0.5;
+        const depth=Math.abs(t);
+        const scale=1-depth*0.08;
+        const dw=26*scale,dh=48*scale;
+        const x=W/2+dx-dw/2;
+        const y=H-90-depth*4;
+        if(tap.x>=x-4&&tap.x<=x+dw+4&&tap.y>=y-4&&tap.y<=y+dh+4){
+          if(i===G.sealsSolved){
+            G.currentSeal=i;initPuzzle(SEALS[i]);goScene('seal');
+            beep(300,0.1,'sawtooth',0.03);
+          } else if(i<G.sealsSolved){
+            // replay solved seal (no-op flavor)
+            beep(500,0.05,'square',0.02);
+          } else {
+            beep(150,0.1,'sawtooth',0.03);
+          }
+          break;
+        }
+      }
+    }
+    // keyboard: enter enters current seal
+    if(enter){
+      const i=G.sealsSolved;
+      if(i<7){G.currentSeal=i;initPuzzle(SEALS[i]);goScene('seal');beep(300,0.1,'sawtooth',0.03);}
+    }
+    // number keys
+    for(let i=1;i<=7;i++){
+      if(keys[i.toString()]){
+        keys[i.toString()]=false;
+        if(i-1===G.sealsSolved){G.currentSeal=i-1;initPuzzle(SEALS[i-1]);goScene('seal');}
+      }
+    }
+  }
+  else if(G.scene==='seal'){
+    const s=SEALS[G.currentSeal];
+    if(puzzle.msgT>0)puzzle.msgT--;
+    // handle back
+    if(keys['escape']){keys['escape']=false;goScene('hub');}
+    // puzzle input
+    if(s.type==='pattern'){
+      if(left){puzzle.sel=(puzzle.sel+3)%4;keys['arrowleft']=false;beep(500,0.
