@@ -1,0 +1,479 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'><title>Neon Vortex</title><style>body{margin:0;overflow:hidden;background:black;font-family:'Arial',sans-serif;touch-action:none;}canvas{display:block;position:fixed;top:0;left:0;width:100vw;height:100vh;}#langBtn{position:fixed;top:10px;right:10px;z-index:100;background:rgba(0,0,0,0.6);color:#0ff;border:1px solid #0ff;border-radius:5px;padding:5px 10px;font-size:16px;cursor:pointer;backdrop-filter:blur(4px);}#langBtn:hover{background:rgba(0,255,255,0.2);}</style></head><body><button id='langBtn'>EN</button><canvas id='gameCanvas'></canvas><script>const canvas=document.getElementById('gameCanvas');const ctx=canvas.getContext('2d');let W,H;function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;}window.addEventListener('resize',resize);resize();const i18n={en:{title:'Neon Vortex',score:'Score',level:'Level',gameOver:'Game Over',restart:'Tap to Restart',win:'Level Complete!',next:'Tap to Continue'},ru:{title:'Неоновый Вихрь',score:'Счёт',level:'Уровень',gameOver:'Игра Окончена',restart:'Нажмите для перезапуска',win:'Уровень Пройден!',next:'Нажмите для продолжения'}};let lang=localStorage.getItem('lang')||'en';const langBtn=document.getElementById('langBtn');function updateLang(){langBtn.textContent=lang.toUpperCase();}langBtn.addEventListener('click',()=>{lang=lang==='en'?'ru':'en';localStorage.setItem('lang',lang);updateLang();});updateLang();// Game state
+let gameState='playing'; // playing, win, gameover
+let score=0;
+let level=1;
+let particles=[];
+let orbs=[];
+
+// Player
+const player={x:0,y:0,vx:0,vy:0,r:12,color:'#0ff'};
+
+// Vortex
+let vortex={x:0,y:0,active:false,strength:0};
+
+// Level data
+let walls=[];
+let spikes=[];
+let portal={x:0,y:0,r:20};
+
+// Input
+let touchX=0,touchY=0;
+let isTouching=false;
+
+// Physics constants
+const GRAVITY=0.15;
+const FRICTION=0.98;
+const VORTEX_STRENGTH=0.8;
+const VORTEX_RADIUS=150;
+
+// Initialize level
+function initLevel(lvl){
+  score=0;
+  particles=[];
+  orbs=[];
+  player.x=W*0.2;
+  player.y=H*0.5;
+  player.vx=0;
+  player.vy=0;
+  vortex.active=false;
+  
+  walls=[];
+  spikes=[];
+  
+  // Generate level based on lvl
+  // Outer walls
+  walls.push({x:0,y:0,w:W,h:20});
+  walls.push({x:0,y:H-20,w:W,h:20});
+  walls.push({x:0,y:0,w:20,h:H});
+  walls.push({x:W-20,y:0,w:20,h:H});
+  
+  // Random obstacles
+  const numWalls=5+lvl*2;
+  for(let i=0;i<numWalls;i++){
+    let w=Math.random()*200+50;
+    let h=Math.random()*30+20;
+    let x=Math.random()*(W-100)+50;
+    let y=Math.random()*(H-100)+50;
+    // Avoid player start
+    if(x<W*0.3 && y<H*0.7) continue;
+    walls.push({x,y,w,h});
+  }
+  
+  // Spikes
+  const numSpikes=3+lvl;
+  for(let i=0;i<numSpikes;i++){
+    let x=Math.random()*(W-100)+50;
+    let y=Math.random()*(H-100)+50;
+    if(x<W*0.3 && y<H*0.7) continue;
+    spikes.push({x,y,r:15});
+  }
+  
+  // Portal
+  portal.x=W*0.8;
+  portal.y=H*0.5;
+  
+  // Collectible orbs
+  for(let i=0;i<5;i++){
+    let x=Math.random()*(W-100)+50;
+    let y=Math.random()*(H-100)+50;
+    orbs.push({x,y,r:8,collected:false});
+  }
+}
+
+// Particle system
+function spawnParticles(x,y,color,count=10){
+  for(let i=0;i<count;i++){
+    let angle=Math.random()*Math.PI*2;
+    let speed=Math.random()*3+1;
+    particles.push({
+      x,y,
+      vx:Math.cos(angle)*speed,
+      vy:Math.sin(angle)*speed,
+      life:1,
+      color,
+      size:Math.random()*3+1
+    });
+  }
+}
+
+// Update particles
+function updateParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    let p=particles[i];
+    p.x+=p.vx;
+    p.y+=p.vy;
+    p.vx*=0.98;
+    p.vy*=0.98;
+    p.life-=0.02;
+    if(p.life<=0) particles.splice(i,1);
+  }
+}
+
+// Draw particles
+function drawParticles(){
+  particles.forEach(p=>{
+    ctx.globalAlpha=p.life;
+    ctx.fillStyle=p.color;
+    ctx.shadowColor=p.color;
+    ctx.shadowBlur=10;
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,p.size,0,Math.PI*2);
+    ctx.fill();
+  });
+  ctx.globalAlpha=1;
+  ctx.shadowBlur=0;
+}
+
+// Physics update
+function updatePhysics(){
+  if(gameState!=='playing') return;
+  
+  // Apply gravity
+  player.vy+=GRAVITY;
+  
+  // Vortex force
+  if(vortex.active){
+    let dx=vortex.x-player.x;
+    let dy=vortex.y-player.y;
+    let dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<VORTEX_RADIUS && dist>5){
+      let force=VORTEX_STRENGTH*(1-dist/VORTEX_RADIUS);
+      player.vx+=dx/dist*force;
+      player.vy+=dy/dist*force;
+    }
+  }
+  
+  // Friction
+  player.vx*=FRICTION;
+  player.vy*=FRICTION;
+  
+  // Move
+  player.x+=player.vx;
+  player.y+=player.vy;
+  
+  // Wall collisions
+  walls.forEach(w=>{
+    if(player.x+player.r>w.x && player.x-player.r<w.x+w.w &&
+       player.y+player.r>w.y && player.y-player.r<w.y+w.h){
+      // Determine collision side
+      let overlapLeft=(player.x+player.r)-w.x;
+      let overlapRight=(w.x+w.w)-(player.x-player.r);
+      let overlapTop=(player.y+player.r)-w.y;
+      let overlapBottom=(w.y+w.h)-(player.y-player.r);
+      let minOverlap=Math.min(overlapLeft,overlapRight,overlapTop,overlapBottom);
+      if(minOverlap===overlapLeft){
+        player.x=w.x-player.r;
+        player.vx*=-0.5;
+      } else if(minOverlap===overlapRight){
+        player.x=w.x+w.w+player.r;
+        player.vx*=-0.5;
+      } else if(minOverlap===overlapTop){
+        player.y=w.y-player.r;
+        player.vy*=-0.5;
+      } else if(minOverlap===overlapBottom){
+        player.y=w.y+w.h+player.r;
+        player.vy*=-0.5;
+      }
+    }
+  });
+  
+  // Spike collision
+  spikes.forEach(s=>{
+    let dx=player.x-s.x;
+    let dy=player.y-s.y;
+    let dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<player.r+s.r){
+      gameState='gameover';
+      spawnParticles(player.x,player.y,'#f00',30);
+    }
+  });
+  
+  // Portal collision
+  let dx=player.x-portal.x;
+  let dy=player.y-portal.y;
+  let dist=Math.sqrt(dx*dx+dy*dy);
+  if(dist<player.r+portal.r){
+    gameState='win';
+    spawnParticles(player.x,player.y,'#0f0',30);
+  }
+  
+  // Orb collection
+  orbs.forEach(o=>{
+    if(!o.collected){
+      let dx=player.x-o.x;
+      let dy=player.y-o.y;
+      let dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist<player.r+o.r){
+        o.collected=true;
+        score+=10;
+        spawnParticles(o.x,o.y,'#ff0',15);
+      }
+    }
+  });
+}
+
+// Drawing functions
+function drawBackground(){
+  // Gradient background
+  let grad=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H));
+  grad.addColorStop(0,'#0a0a2a');
+  grad.addColorStop(1,'#000000');
+  ctx.fillStyle=grad;
+  ctx.fillRect(0,0,W,H);
+  
+  // Grid lines
+  ctx.strokeStyle='rgba(0,255,255,0.1)';
+  ctx.lineWidth=1;
+  for(let x=0;x<W;x+=50){
+    ctx.beginPath();
+    ctx.moveTo(x,0);
+    ctx.lineTo(x,H);
+    ctx.stroke();
+  }
+  for(let y=0;y<H;y+=50){
+    ctx.beginPath();
+    ctx.moveTo(0,y);
+    ctx.lineTo(W,y);
+    ctx.stroke();
+  }
+}
+
+function drawWalls(){
+  walls.forEach(w=>{
+    ctx.fillStyle='rgba(0,255,255,0.3)';
+    ctx.shadowColor='#0ff';
+    ctx.shadowBlur=10;
+    ctx.fillRect(w.x,w.y,w.w,w.h);
+    ctx.strokeStyle='#0ff';
+    ctx.lineWidth=2;
+    ctx.strokeRect(w.x,w.y,w.w,w.h);
+  });
+  ctx.shadowBlur=0;
+}
+
+function drawSpikes(){
+  spikes.forEach(s=>{
+    ctx.fillStyle='#f00';
+    ctx.shadowColor='#f00';
+    ctx.shadowBlur=15;
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fill();
+    // Inner detail
+    ctx.fillStyle='#fff';
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,s.r*0.5,0,Math.PI*2);
+    ctx.fill();
+  });
+  ctx.shadowBlur=0;
+}
+
+function drawPortal(){
+  ctx.shadowColor='#0f0';
+  ctx.shadowBlur=30;
+  let grad=ctx.createRadialGradient(portal.x,portal.y,0,portal.x,portal.y,portal.r);
+  grad.addColorStop(0,'#0f0');
+  grad.addColorStop(1,'rgba(0,255,0,0)');
+  ctx.fillStyle=grad;
+  ctx.beginPath();
+  ctx.arc(portal.x,portal.y,portal.r,0,Math.PI*2);
+  ctx.fill();
+  ctx.shadowBlur=0;
+}
+
+function drawOrbs(){
+  orbs.forEach(o=>{
+    if(!o.collected){
+      ctx.fillStyle='#ff0';
+      ctx.shadowColor='#ff0';
+      ctx.shadowBlur=15;
+      ctx.beginPath();
+      ctx.arc(o.x,o.y,o.r,0,Math.PI*2);
+      ctx.fill();
+    }
+  });
+  ctx.shadowBlur=0;
+}
+
+function drawPlayer(){
+  ctx.shadowColor='#0ff';
+  ctx.shadowBlur=20;
+  ctx.fillStyle='#0ff';
+  ctx.beginPath();
+  ctx.arc(player.x,player.y,player.r,0,Math.PI*2);
+  ctx.fill();
+  // Inner glow
+  ctx.fillStyle='#fff';
+  ctx.beginPath();
+  ctx.arc(player.x,player.y,player.r*0.5,0,Math.PI*2);
+  ctx.fill();
+  ctx.shadowBlur=0;
+}
+
+function drawVortex(){
+  if(vortex.active){
+    ctx.shadowColor='#f0f';
+    ctx.shadowBlur=25;
+    ctx.strokeStyle='#f0f';
+    ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.arc(vortex.x,vortex.y,20,0,Math.PI*2);
+    ctx.stroke();
+    // Rotating effect
+    let angle=Date.now()*0.005;
+    for(let i=0;i<3;i++){
+      let a=angle+i*Math.PI*2/3;
+      ctx.beginPath();
+      ctx.moveTo(vortex.x+Math.cos(a)*20,vortex.y+Math.sin(a)*20);
+      ctx.lineTo(vortex.x+Math.cos(a)*30,vortex.y+Math.sin(a)*30);
+      ctx.stroke();
+    }
+    ctx.shadowBlur=0;
+  }
+}
+
+function drawUI(){
+  ctx.fillStyle='#fff';
+  ctx.font='20px Arial';
+  ctx.textAlign='left';
+  ctx.fillText(i18n[lang].score+': '+score,20,40);
+  ctx.fillText(i18n[lang].level+': '+level,20,70);
+}
+
+function drawGameOver(){
+  ctx.fillStyle='rgba(0,0,0,0.7)';
+  ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#f00';
+  ctx.font='40px Arial';
+  ctx.textAlign='center';
+  ctx.fillText(i18n[lang].gameOver,W/2,H/2-40);
+  ctx.fillStyle='#fff';
+  ctx.font='24px Arial';
+  ctx.fillText(i18n[lang].restart,W/2,H/2+40);
+}
+
+function drawWin(){
+  ctx.fillStyle='rgba(0,0,0,0.7)';
+  ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#0f0';
+  ctx.font='40px Arial';
+  ctx.textAlign='center';
+  ctx.fillText(i18n[lang].win,W/2,H/2-40);
+  ctx.fillStyle='#fff';
+  ctx.font='24px Arial';
+  ctx.fillText(i18n[lang].next,W/2,H/2+40);
+}
+
+// Main loop
+function loop(){
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  updatePhysics();
+  updateParticles();
+  
+  drawWalls();
+  drawSpikes();
+  drawPortal();
+  drawOrbs();
+  drawVortex();
+  drawPlayer();
+  drawParticles();
+  drawUI();
+  
+  if(gameState==='gameover') drawGameOver();
+  if(gameState==='win') drawWin();
+  
+  requestAnimationFrame(loop);
+}
+
+// Input handling
+canvas.addEventListener('touchstart',(e)=>{
+  e.preventDefault();
+  if(gameState==='gameover'){
+    gameState='playing';
+    initLevel(level);
+    return;
+  }
+  if(gameState==='win'){
+    level++;
+    gameState='playing';
+    initLevel(level);
+    return;
+  }
+  isTouching=true;
+  let touch=e.touches[0];
+  touchX=touch.clientX;
+  touchY=touch.clientY;
+  vortex.x=touchX;
+  vortex.y=touchY;
+  vortex.active=true;
+},{passive:false});
+
+canvas.addEventListener('touchmove',(e)=>{
+  e.preventDefault();
+  if(!isTouching) return;
+  let touch=e.touches[0];
+  touchX=touch.clientX;
+  touchY=touch.clientY;
+  vortex.x=touchX;
+  vortex.y=touchY;
+},{passive:false});
+
+canvas.addEventListener('touchend',(e)=>{
+  e.preventDefault();
+  isTouching=false;
+  vortex.active=false;
+},{passive:false});
+
+// Keyboard controls (for desktop)
+let keys={};
+window.addEventListener('keydown',(e)=>{
+  keys[e.key]=true;
+  if(e.key===' '){
+    e.preventDefault();
+    if(gameState==='gameover'){
+      gameState='playing';
+      initLevel(level);
+    } else if(gameState==='win'){
+      level++;
+      gameState='playing';
+      initLevel(level);
+    }
+  }
+});
+window.addEventListener('keyup',(e)=>{
+  keys[e.key]=false;
+});
+
+// Mouse controls for desktop
+canvas.addEventListener('mousedown',(e)=>{
+  if(gameState==='gameover'){
+    gameState='playing';
+    initLevel(level);
+    return;
+  }
+  if(gameState==='win'){
+    level++;
+    gameState='playing';
+    initLevel(level);
+    return;
+  }
+  isTouching=true;
+  vortex.x=e.clientX;
+  vortex.y=e.clientY;
+  vortex.active=true;
+});
+canvas.addEventListener('mousemove',(e)=>{
+  if(!isTouching) return;
+  vortex.x=e.clientX;
+  vortex.y=e.clientY;
+});
+canvas.addEventListener('mouseup',()=>{
+  isTouching=false;
+  vortex.active=false;
+});
+
+// Start
+initLevel(level);
+loop();
+</script></body></html>
