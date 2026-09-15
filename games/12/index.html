@@ -1,0 +1,565 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Echoes of Aetheria</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; touch-action: none; background: #000; font-family: 'Courier New', monospace; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #ui { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  .hud { position: absolute; top: 12px; left: 12px; color: #7fffe0; font-size: 14px; text-shadow: 0 0 8px #0ff; letter-spacing: 1px; }
+  .hud2 { position: absolute; top: 12px; right: 12px; color: #ff7fe0; font-size: 14px; text-shadow: 0 0 8px #f0f; text-align: right; }
+  .dialog { position: absolute; bottom: 100px; left: 5%; right: 5%; background: linear-gradient(180deg, rgba(10,20,40,0.95), rgba(5,10,25,0.98)); border: 2px solid #4ff; border-radius: 8px; padding: 16px; color: #cff; font-size: 15px; line-height: 1.4; box-shadow: 0 0 30px rgba(0,255,255,0.5), inset 0 0 20px rgba(0,255,255,0.1); display: none; }
+  .dialog .speaker { color: #ff7fe0; font-weight: bold; margin-bottom: 6px; text-shadow: 0 0 8px #f0f; }
+  .toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fff; font-size: 22px; text-align: center; text-shadow: 0 0 20px #0ff, 0 0 40px #0ff; opacity: 0; transition: opacity 0.5s; letter-spacing: 2px; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div class="hud" id="hudHealth">HP ██████</div>
+  <div class="hud2" id="hudAbil">◇ base</div>
+  <div class="dialog" id="dialog"><div class="speaker" id="speaker">AETHERIA</div><div id="dialogText"></div></div>
+  <div class="toast" id="toast"></div>
+</div>
+<script>
+(() => {
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize); resize();
+
+// ============ WORLD ============
+const TILE = 32;
+const LEVEL_W = 90, LEVEL_H = 40;
+
+// Tile types: 0 empty, 1 solid, 2 platform(top pass), 3 hazard, 4 gate-doublejump, 5 gate-dash, 6 gate-pulse, 7 relic
+function buildWorld() {
+  const w = [];
+  for (let y=0; y<LEVEL_H; y++) { w.push(new Array(LEVEL_W).fill(0)); }
+  // outer walls
+  for (let x=0; x<LEVEL_W; x++){ w[0][x]=1; w[LEVEL_H-1][x]=1; }
+  for (let y=0; y<LEVEL_H; y++){ w[y][0]=1; w[y][LEVEL_W-1]=1; }
+
+  // Region 1: start cavern (left)
+  for (let x=1; x<25; x++) w[LEVEL_H-2][x]=1;
+  for (let x=1; x<10; x++) w[LEVEL_H-3][x]=1;
+  // floor patches
+  w[LEVEL_H-6][10]=1; w[LEVEL_H-6][11]=1; w[LEVEL_H-6][12]=1;
+  w[LEVEL_H-9][18]=1; w[LEVEL_H-9][19]=1; w[LEVEL_H-9][20]=1;
+  // ceiling
+  for (let x=1; x<25; x++) w[8][x]=1;
+  for (let x=5; x<15; x++) w[10][x]=1;
+
+  // Relic 1 (double jump) at x=20, y=6
+  w[7][22]=7;
+
+  // Gate 1 (double jump) - wall at x=28 blocking passage
+  for (let y=2; y<LEVEL_H-1; y++) w[y][28]=4;
+
+  // Region 2: mid canyon
+  for (let x=29; x<55; x++) w[LEVEL_H-2][x]=1;
+  // platforms
+  w[LEVEL_H-6][32]=2; w[LEVEL_H-6][33]=2; w[LEVEL_H-6][34]=2;
+  w[LEVEL_H-9][38]=2; w[LEVEL_H-9][39]=2;
+  w[LEVEL_H-12][44]=2; w[LEVEL_H-12][45]=2; w[LEVEL_H-12][46]=2;
+  // spikes
+  for (let x=48; x<52; x++) w[LEVEL_H-3][x]=3;
+
+  // Relic 2 (dash) at x=52, y=10
+  w[10][52]=7;
+
+  // Gate 2 (dash) at x=58
+  for (let y=2; y<LEVEL_H-1; y++) w[y][58]=5;
+
+  // Region 3: vertical shaft
+  for (let x=59; x<75; x++) w[LEVEL_H-2][x]=1;
+  for (let x=59; x<75; x++) w[4][x]=1;
+  w[LEVEL_H-6][62]=2; w[LEVEL_H-10][66]=2; w[LEVEL_H-14][70]=2;
+  // hazard pit
+  for (let x=64; x<70; x++) w[LEVEL_H-3][x]=0;
+  for (let x=64; x<70; x++) w[LEVEL_H-1][x]=3;
+
+  w[6][72]=7; // Relic 3 (pulse)
+
+  // Gate 3 (pulse) at x=78
+  for (let y=2; y<LEVEL_H-1; y++) w[y][78]=6;
+
+  // Final chamber
+  for (let x=79; x<LEVEL_W-1; x++) w[LEVEL_H-2][x]=1;
+  for (let x=79; x<LEVEL_W-1; x++) w[6][x]=1;
+
+  return w;
+}
+const world = buildWorld();
+
+// ============ PLAYER ============
+const player = {
+  x: 3*TILE, y: (LEVEL_H-4)*TILE, vx: 0, vy: 0,
+  w: 20, h: 28, onGround: false, facing: 1,
+  hp: 6, maxHp: 6, invuln: 0,
+  hasDoubleJump: false, hasDash: false, hasPulse: false,
+  jumps: 0, dashTimer: 0, dashCooldown: 0, pulseTimer: 0, pulseCooldown: 0,
+  coyote: 0, jumpBuffer: 0
+};
+
+// ============ INPUT ============
+const keys = {};
+const input = { left:false, right:false, jump:false, jumpPressed:false, dash:false, pulse:false };
+window.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key === ' ' || e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') { if(!input.jump) input.jumpPressed = true; input.jump = true; e.preventDefault(); }
+  if (e.key.toLowerCase() === 'k' || e.key.toLowerCase() === 'x') input.dash = true;
+  if (e.key.toLowerCase() === 'j' || e.key.toLowerCase() === 'z') input.pulse = true;
+});
+window.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+  if (e.key === ' ' || e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') input.jump = false;
+  if (e.key.toLowerCase() === 'k' || e.key.toLowerCase() === 'x') input.dash = false;
+  if (e.key.toLowerCase() === 'j' || e.key.toLowerCase() === 'z') input.pulse = false;
+});
+
+// Touch controls - virtual zones
+let touchState = { left:false, right:false, jump:false, jumpPressed:false, dash:false, pulse:false };
+function handleTouches(e) {
+  const rect = canvas.getBoundingClientRect();
+  const zones = { left:false, right:false, jump:false, dash:false, pulse:false };
+  const btnRadius = Math.min(W,H) * 0.06;
+  const cx = W, cy = H;
+  // button centers
+  const jumpBtn = { x: W - 80, y: H - 90, r: 55 };
+  const dashBtn = { x: W - 160, y: H - 60, r: 42 };
+  const pulseBtn = { x: W - 80, y: H - 180, r: 42 };
+  for (let i=0; i<e.touches.length; i++) {
+    const t = e.touches[i];
+    const dx = t.clientX - rect.left, dy = t.clientY - rect.top;
+    // Left half = movement
+    if (dx < W * 0.4) {
+      if (dx < W * 0.2) zones.left = true; else zones.right = true;
+    }
+    const dj = Math.hypot(dx-jumpBtn.x, dy-jumpBtn.y);
+    const dd = Math.hypot(dx-dashBtn.x, dy-dashBtn.y);
+    const dp = Math.hypot(dx-pulseBtn.x, dy-pulseBtn.y);
+    if (dj < jumpBtn.r) zones.jump = true;
+    if (dd < dashBtn.r) zones.dash = true;
+    if (dp < pulseBtn.r) zones.pulse = true;
+  }
+  if (zones.jump && !touchState.jump) touchState.jumpPressed = true;
+  touchState.left = zones.left; touchState.right = zones.right;
+  touchState.jump = zones.jump;
+  touchState.dash = zones.dash; touchState.pulse = zones.pulse;
+}
+canvas.addEventListener('touchstart', e => { e.preventDefault(); handleTouches(e); }, {passive:false});
+canvas.addEventListener('touchmove', e => { e.preventDefault(); handleTouches(e); }, {passive:false});
+canvas.addEventListener('touchend', e => { e.preventDefault(); handleTouches(e); }, {passive:false});
+canvas.addEventListener('touchcancel', e => { e.preventDefault(); handleTouches(e); }, {passive:false});
+
+// ============ CAMERA ============
+const cam = { x: 0, y: 0 };
+
+// ============ PARTICLES ============
+const particles = [];
+function spawnParticles(x, y, color, count, spread=3, life=40) {
+  for (let i=0; i<count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random()-0.5)*spread,
+      vy: (Math.random()-0.5)*spread - 1,
+      life: life + Math.random()*life*0.5,
+      maxLife: life,
+      color, size: 2 + Math.random()*3
+    });
+  }
+}
+
+// ============ DIALOGUE ============
+const dialogEl = document.getElementById('dialog');
+const dialogTextEl = document.getElementById('dialogText');
+const speakerEl = document.getElementById('speaker');
+const toastEl = document.getElementById('toast');
+let dialogQueue = [];
+let dialogTimer = 0;
+function say(speaker, text, dur=200) {
+  dialogQueue.push({ speaker, text, dur });
+}
+function updateDialog(dt) {
+  if (dialogQueue.length > 0 && dialogTimer <= 0) {
+    const d = dialogQueue.shift();
+    speakerEl.textContent = d.speaker;
+    dialogTextEl.textContent = d.text;
+    dialogEl.style.display = 'block';
+    dialogTimer = d.dur;
+  }
+  if (dialogTimer > 0) {
+    dialogTimer -= dt;
+    if (dialogTimer <= 0) dialogEl.style.display = 'none';
+  }
+}
+function toast(text, dur=120) {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  setTimeout(()=>toastEl.classList.remove('show'), dur*16);
+}
+
+// ============ COLLISION ============
+function tileAt(px, py) {
+  const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
+  if (tx < 0 || ty < 0 || tx >= LEVEL_W || ty >= LEVEL_H) return 1;
+  return world[ty][tx];
+}
+function isSolid(t) { return t === 1 || t === 4 || t === 5 || t === 6; }
+function isPlatform(t) { return t === 2; }
+
+function moveAndCollide(ent, dx, dy) {
+  // X axis
+  ent.x += dx;
+  let hitGate = null;
+  for (let py = ent.y; py < ent.y + ent.h; py += 8) {
+    for (let px = ent.x; px < ent.x + ent.w; px += 8) {
+      const t = tileAt(px, py);
+      if (isSolid(t)) {
+        if (t >= 4) hitGate = t;
+        // push out
+        if (dx > 0) ent.x = Math.floor(px/TILE)*TILE - ent.w - 0.01;
+        else if (dx < 0) ent.x = Math.floor(px/TILE)*TILE + TILE + 0.01;
+        ent.vx = 0;
+        break;
+      }
+    }
+  }
+  // Y axis
+  ent.y += dy;
+  ent.onGround = false;
+  for (let py = ent.y; py < ent.y + ent.h; py += 8) {
+    for (let px = ent.x; px < ent.x + ent.w; px += 8) {
+      const t = tileAt(px, py);
+      if (isSolid(t)) {
+        if (t >= 4) hitGate = t;
+        if (dy > 0) { ent.y = Math.floor(py/TILE)*TILE - ent.h - 0.01; ent.vy = 0; ent.onGround = true; }
+        else if (dy < 0) { ent.y = Math.floor(py/TILE)*TILE + TILE + 0.01; ent.vy = 0; }
+        break;
+      }
+      if (isPlatform(t) && dy > 0) {
+        const top = Math.floor(py/TILE)*TILE;
+        if (ent.y + ent.h - dy <= top + 2 && ent.y + ent.h <= top + 8) {
+          ent.y = top - ent.h - 0.01; ent.vy = 0; ent.onGround = true;
+        }
+      }
+    }
+  }
+  return hitGate;
+}
+
+// ============ GAME STATE ============
+let time = 0;
+let gameOver = false, victory = false;
+let checkpoint = { x: player.x, y: player.y };
+let relicsCollected = { dj:false, dash:false, pulse:false };
+let gatesOpened = { dj:false, dash:false, pulse:false };
+let narrativeStage = 0;
+
+function triggerNarrative() {
+  if (narrativeStage === 0) {
+    say("KIRA", "Signal source... Aetheria. Breathable atmosphere. Something's wrong.");
+    say("AETHERIA", "You came. Heard my call. Come deeper, child of stars.");
+    narrativeStage = 1;
+  }
+  if (narrativeStage === 1 && player.x > 15*TILE) {
+    say("KIRA", "Relic... resonates with my suit. It's teaching me to jump again.");
+    narrativeStage = 2;
+  }
+  if (narrativeStage === 2 && relicsCollected.dj) {
+    say("AETHERIA", "The first gift. You leap, but the path asks more.");
+    narrativeStage = 3;
+  }
+  if (narrativeStage === 3 && relicsCollected.dash) {
+    say("KIRA", "I can phase through... wait, this isn't technology. It's biological.");
+    say("AETHERIA", "I am not ruins. I am alive. And I am dying.");
+    narrativeStage = 4;
+  }
+  if (narrativeStage === 4 && relicsCollected.pulse) {
+    say("AETHERIA", "The pulse will wake the heart. But you must choose — heal me, or leave me to rest.");
+    narrativeStage = 5;
+  }
+}
+
+// ============ UPDATE ============
+function update(dt) {
+  if (gameOver || victory) return;
+  time += dt;
+  // Combine inputs
+  const left = input.left || touchState.left || keys['a'] || keys['arrowleft'];
+  const right = input.right || touchState.right || keys['d'] || keys['arrowright'];
+  const jumpHeld = input.jump || touchState.jump;
+  const jumpPressed = input.jumpPressed || touchState.jumpPressed;
+  input.jumpPressed = false; touchState.jumpPressed = false;
+
+  const speed = 3.2;
+  const accel = 0.6;
+  const friction = 0.75;
+
+  if (player.dashTimer > 0) {
+    // during dash, no input
+  } else {
+    if (left) { player.vx -= accel; player.facing = -1; }
+    if (right) { player.vx += accel; player.facing = 1; }
+    if (!left && !right) player.vx *= friction;
+    player.vx = Math.max(-speed, Math.min(speed, player.vx));
+  }
+
+  // Jump
+  if (player.onGround) { player.jumps = 0; player.coyote = 6; }
+  else player.coyote = Math.max(0, player.coyote - 1);
+  if (jumpPressed) player.jumpBuffer = 6;
+  else player.jumpBuffer = Math.max(0, player.jumpBuffer - 1);
+
+  if (player.jumpBuffer > 0) {
+    if (player.onGround || player.coyote > 0) {
+      player.vy = -8.5;
+      player.jumps = 1;
+      player.jumpBuffer = 0; player.coyote = 0;
+      spawnParticles(player.x + player.w/2, player.y + player.h, '#7fffe0', 8, 4, 20);
+    } else if (player.hasDoubleJump && player.jumps < 2) {
+      player.vy = -7.5;
+      player.jumps = 2;
+      player.jumpBuffer = 0;
+      spawnParticles(player.x + player.w/2, player.y + player.h, '#ff7fe0', 14, 5, 25);
+    }
+  }
+  if (!jumpHeld && player.vy < 0) player.vy *= 0.85;
+
+  // Dash
+  if (player.dashCooldown > 0) player.dashCooldown -= dt;
+  if ((input.dash || touchState.dash) && player.hasDash && player.dashCooldown <= 0 && player.dashTimer <= 0) {
+    player.dashTimer = 10;
+    player.dashCooldown = 45;
+    player.vx = player.facing * 12;
+    player.vy = 0;
+    spawnParticles(player.x + player.w/2, player.y + player.h/2, '#ff7fe0', 18, 6, 20);
+  }
+  if (player.dashTimer > 0) {
+    player.dashTimer -= dt;
+    if (Math.random() < 0.7) spawnParticles(player.x + player.w/2, player.y + player.h/2, '#f0f', 1, 2, 15);
+  }
+
+  // Pulse
+  if (player.pulseCooldown > 0) player.pulseCooldown -= dt;
+  if ((input.pulse || touchState.pulse) && player.hasPulse && player.pulseCooldown <= 0) {
+    player.pulseTimer = 15;
+    player.pulseCooldown = 60;
+    pulseWave.active = true; pulseWave.r = 0; pulseWave.x = player.x + player.w/2; pulseWave.y = player.y + player.h/2;
+    spawnParticles(player.x + player.w/2, player.y + player.h/2, '#ff0', 30, 8, 40);
+  }
+  if (player.pulseTimer > 0) player.pulseTimer -= dt;
+
+  // Gravity
+  player.vy += 0.55;
+  player.vy = Math.min(player.vy, 14);
+
+  // Move
+  const gateHit = moveAndCollide(player, player.vx, player.vy);
+  if (gateHit) {
+    // Player pushed against a gate — check if can open
+    if (gateHit === 4 && player.hasDoubleJump && !gatesOpened.dj) { gatesOpened.dj = true; toast('GATE OPENED'); }
+    if (gateHit === 5 && player.hasDash && !gatesOpened.dash) { gatesOpened.dash = true; toast('GATE OPENED'); }
+    if (gateHit === 6 && player.hasPulse && !gatesOpened.pulse) { gatesOpened.pulse = true; toast('GATE OPENED'); }
+  }
+
+  // Update gates (remove tiles when opened)
+  if (gatesOpened.dj) for (let y=0;y<LEVEL_H;y++) if (world[y][28]===4) world[y][28]=0;
+  if (gatesOpened.dash) for (let y=0;y<LEVEL_H;y++) if (world[y][58]===5) world[y][58]=0;
+  if (gatesOpened.pulse) for (let y=0;y<LEVEL_H;y++) if (world[y][78]===6) world[y][78]=0;
+
+  // Check relic pickups
+  const px = player.x + player.w/2, py = player.y + player.h/2;
+  for (let y=0; y<LEVEL_H; y++) for (let x=0; x<LEVEL_W; x++) {
+    if (world[y][x] === 7) {
+      const dx = px - (x*TILE + TILE/2), dy = py - (y*TILE + TILE/2);
+      if (Math.hypot(dx,dy) < 28) {
+        world[y][x] = 0;
+        if (!relicsCollected.dj) { relicsCollected.dj = true; player.hasDoubleJump = true; toast('◆ DOUBLE JUMP'); checkpoint = { x: player.x, y: player.y }; }
+        else if (!relicsCollected.dash) { relicsCollected.dash = true; player.hasDash = true; toast('◆ PHASE DASH'); checkpoint = { x: player.x, y: player.y }; }
+        else if (!relicsCollected.pulse) { relicsCollected.pulse = true; player.hasPulse = true; toast('◆ ENERGY PULSE'); checkpoint = { x: player.x, y: player.y }; }
+        spawnParticles(x*TILE+TILE/2, y*TILE+TILE/2, '#ff0', 40, 8, 60);
+      }
+    }
+    if (world[y][x] === 3) { // hazard
+      const dx = Math.abs(px - (x*TILE + TILE/2));
+      const dy = Math.abs(py - (y*TILE + TILE/2));
+      if (dx < TILE/2 + 8 && dy < TILE/2 + 8 && player.invuln <= 0) {
+        player.hp--; player.invuln = 60;
+        player.vx = -player.facing * 6; player.vy = -6;
+        spawnParticles(px, py, '#f44', 20, 6, 40);
+        if (player.hp <= 0) { gameOver = true; }
+      }
+    }
+  }
+  if (player.invuln > 0) player.invuln--;
+
+  // Fall out
+  if (player.y > LEVEL_H*TILE + 100) {
+    player.hp--; 
+    if (player.hp <= 0) gameOver = true;
+    else { player.x = checkpoint.x; player.y = checkpoint.y; player.vx = 0; player.vy = 0; player.invuln = 60; }
+  }
+
+  // Victory
+  if (player.hasPulse && player.x > 82*TILE && !victory) {
+    victory = true;
+    say("AETHERIA", "You chose to heal. The pulse spreads through my veins. Thank you, star-child.");
+    say("KIRA", "Aetheria... you're not a planet. You're a life. I'll stay and learn.");
+  }
+
+  // Pulse wave update
+  if (pulseWave.active) {
+    pulseWave.r += 6;
+    if (pulseWave.r > 200) pulseWave.active = false;
+  }
+
+  // Camera
+  const targetX = player.x + player.w/2 - W/2;
+  const targetY = player.y + player.h/2 - H/2;
+  cam.x += (targetX - cam.x) * 0.12;
+  cam.y += (targetY - cam.y) * 0.12;
+  cam.x = Math.max(0, Math.min(LEVEL_W*TILE - W, cam.x));
+  cam.y = Math.max(0, Math.min(LEVEL_H*TILE - H, cam.y));
+
+  // Particles
+  for (let i=particles.length-1; i>=0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life--;
+    if (p.life <= 0) particles.splice(i,1);
+  }
+
+  triggerNarrative();
+  updateDialog(dt);
+
+  // HUD
+  const hpBar = '█'.repeat(Math.max(0,player.hp)) + '░'.repeat(Math.max(0,player.maxHp-player.hp));
+  document.getElementById('hudHealth').textContent = 'HP ' + hpBar;
+  let abil = '◇';
+  if (player.hasDoubleJump) abil += ' ◆2x';
+  if (player.hasDash) abil += ' ◆dash';
+  if (player.hasPulse) abil += ' ◆pulse';
+  document.getElementById('hudAbil').textContent = abil;
+}
+
+const pulseWave = { active:false, r:0, x:0, y:0 };
+
+// ============ RENDER ============
+function drawBackground() {
+  // Gradient sky based on region
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  const regionX = player.x / (LEVEL_W*TILE);
+  const hue1 = 200 - regionX * 100;
+  g.addColorStop(0, `hsl(${hue1}, 60%, 8%)`);
+  g.addColorStop(0.5, `hsl(${hue1+30}, 50%, 12%)`);
+  g.addColorStop(1, `hsl(${hue1-20}, 40%, 5%)`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // Parallax stars layer 1 (far)
+  ctx.save();
+  const px1 = cam.x * 0.1;
+  for (let i=0; i<60; i++) {
+    const sx = ((i * 137.5) % (W + 200)) - 100 - px1 * 0.5;
+    const sy = (i * 73.3) % H;
+    const tw = 0.5 + 0.5*Math.sin(time*0.05 + i);
+    ctx.fillStyle = `rgba(180, 220, 255, ${0.3 + tw*0.4})`;
+    ctx.fillRect(((sx % (W+200)) + W+200) % (W+200) - 100, sy, 2, 2);
+  }
+  ctx.restore();
+
+  // Parallax mountains layer 2
+  ctx.save();
+  const px2 = cam.x * 0.3;
+  ctx.fillStyle = `hsla(${hue1}, 40%, 10%, 0.9)`;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let i=0; i<10; i++) {
+    const bx = i * 200 - (px2 % 200);
+    const bh = 200 + Math.sin(i*1.7) * 100;
+    ctx.lineTo(bx, H - bh);
+    ctx.lineTo(bx + 100, H - bh*0.6);
+  }
+  ctx.lineTo(W, H);
+  ctx.fill();
+  ctx.restore();
+
+  // Parallax layer 3 (closer)
+  ctx.save();
+  const px3 = cam.x * 0.55;
+  ctx.fillStyle = `hsla(${hue1-30}, 45%, 7%, 0.95)`;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let i=0; i<14; i++) {
+    const bx = i * 160 - (px3 % 160);
+    const bh = 120 + Math.sin(i*2.3) * 60;
+    ctx.lineTo(bx, H - bh);
+    ctx.lineTo(bx + 80, H - bh*0.5);
+  }
+  ctx.lineTo(W, H);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawTile(t, x, y) {
+  const sx = x*TILE - cam.x, sy = y*TILE - cam.y;
+  if (sx < -TILE || sx > W || sy < -TILE || sy > H) return;
+  if (t === 1) {
+    const g = ctx.createLinearGradient(sx, sy, sx, sy+TILE);
+    g.addColorStop(0, '#2a4a5a');
+    g.addColorStop(1, '#0a1a2a');
+    ctx.fillStyle = g;
+    ctx.fillRect(sx, sy, TILE, TILE);
+    // edge highlight
+    ctx.fillStyle = 'rgba(120, 220, 255, 0.15)';
+    ctx.fillRect(sx, sy, TILE, 2);
+    ctx.strokeStyle = 'rgba(0,255,255,0.08)';
+    ctx.strokeRect(sx+0.5, sy+0.5, TILE-1, TILE-1);
+  } else if (t === 2) {
+    ctx.fillStyle = '#1a3a4a';
+    ctx.fillRect(sx, sy, TILE, 6);
+    ctx.fillStyle = 'rgba(120,220,255,0.3)';
+    ctx.fillRect(sx, sy, TILE, 2);
+  } else if (t === 3) {
+    // spikes
+    ctx.fillStyle = '#f44';
+    ctx.shadowColor = '#f00'; ctx.shadowBlur = 12;
+    for (let i=0; i<4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(sx + i*8, sy + TILE);
+      ctx.lineTo(sx + i*8 + 4, sy + TILE*0.4 + Math.sin(time*0.1 + i)*2);
+      ctx.lineTo(sx + i*8 + 8, sy + TILE);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+  } else if (t === 4 || t === 5 || t === 6) {
+    // Gate — pulsating energy
+    const colors = { 4: '#7fffe0', 5: '#ff7fe0', 6: '#ffea7f' };
+    const col = colors[t];
+    const pulse = 0.5 + 0.5*Math.sin(time*0.1);
+    ctx.save();
+    ctx.shadowColor = col; ctx.shadowBlur = 20;
+    ctx.fillStyle = col.replace(')', `, ${0.3 + pulse*0.4})`).replace('#', 'rgba(').replace(/^rgba\(([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/, (m,r,g,b)=>`rgba(${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)}`);
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.3 + pulse*0.5;
+    ctx.fillRect(sx, sy, TILE, TILE);
+    // scan lines
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1;
+    for (let i=0; i<TILE; i+=6) {
+      ctx.beginPath();
+      ctx.moveTo(sx, sy+i +
