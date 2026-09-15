@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>THE LAST SIGNAL · narrative puzzle</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; touch-action: none; background: #000; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+    </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+    // --- SETUP ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    let W, H;
+    function resize() {
+        W = canvas.width = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- GAME STATE ---
+    const STATE = {
+        MENU: 'menu',
+        STORY: 'story',
+        PUZZLE: 'puzzle',
+        ENDING: 'ending'
+    };
+    let currentState = STATE.MENU;
+
+    // --- NARRATIVE DATA ---
+    const story = {
+        nodes: {
+            start: {
+                text: "The station hums with a dying frequency. A flickering screen asks: 'Who are you?'",
+                choices: [
+                    { text: "I am the last operator.", next: 'operator' },
+                    { text: "I am the signal itself.", next: 'signal' }
+                ]
+            },
+            operator: {
+                text: "You claim the role. The walls shift — a panel slides open, revealing a keypad with four symbols: △ ◇ ○ ☆.",
+                puzzle: 'pattern'
+            },
+            signal: {
+                text: "You are the signal. The station bends around you. A holographic grid appears with missing nodes.",
+                puzzle: 'grid'
+            },
+            // after puzzles
+            afterPattern: {
+                text: "The lock clicks. Behind it, a message: 'The truth is layered. Choose your next step.'",
+                choices: [
+                    { text: "Open the door.", next: 'door' },
+                    { text: "Turn back.", next: 'ending_escape' }
+                ]
+            },
+            afterGrid: {
+                text: "The grid stabilizes. A voice whispers: 'You are not who you think. Two paths remain.'",
+                choices: [
+                    { text: "Follow the voice.", next: 'voice' },
+                    { text: "Destroy the core.", next: 'ending_destroy' }
+                ]
+            },
+            door: {
+                text: "The door leads to a chamber of mirrors. You see yourself — but younger. A final choice:",
+                choices: [
+                    { text: "Merge with your past.", next: 'ending_merge' },
+                    { text: "Shatter the mirrors.", next: 'ending_shatter' }
+                ]
+            },
+            ending_escape: {
+                text: "You flee the station. The signal fades. But it never truly leaves you...",
+                end: true
+            },
+            ending_destroy: {
+                text: "The core collapses. In the silence, you hear a heartbeat — your own. The station was you.",
+                end: true
+            },
+            ending_merge: {
+                text: "Past and present fuse. You become the signal, eternal and alone. The station is your body.",
+                end: true
+            },
+            ending_shatter: {
+                text: "Mirrors break. Reality fractures. You wake up in a hospital — the station was a coma dream.",
+                end: true
+            }
+        },
+        current: 'start',
+        history: []
+    };
+
+    // --- PUZZLE DEFINITIONS ---
+    const puzzles = {
+        pattern: {
+            type: 'pattern',
+            solved: false,
+            sequence: [0, 1, 2, 3], // indices for △ ◇ ○ ☆
+            playerInput: [],
+            symbols: ['△', '◇', '○', '☆'],
+            target: [2, 0, 3, 1], // correct order: ○ △ ☆ ◇
+            hint: "Click the symbols in the order shown on the flickering screen: ○ △ ☆ ◇"
+        },
+        grid: {
+            type: 'grid',
+            solved: false,
+            size: 3,
+            grid: [
+                [1, 0, 1],
+                [0, 1, 0],
+                [1, 0, 1]
+            ],
+            target: [
+                [1, 1, 1],
+                [1, 0, 1],
+                [1, 1, 1]
+            ],
+            hint: "Tap cells to form a hollow square (all edges filled)."
+        }
+    };
+
+    // --- PSEUDO-3D PARALLAX LAYERS (background) ---
+    let time = 0;
+    const stars = [];
+    for (let i = 0; i < 80; i++) {
+        stars.push({
+            x: Math.random() * W,
+            y: Math.random() * H,
+            z: Math.random() * 2 + 0.5,
+            size: Math.random() * 2 + 1
+        });
+    }
+    // Mid-layer floating particles
+    const particles = [];
+    for (let i = 0; i < 40; i++) {
+        particles.push({
+            x: Math.random() * W,
+            y: Math.random() * H,
+            vx: (Math.random() - 0.5) * 0.5,
+            vy: (Math.random() - 0.5) * 0.5,
+            size: Math.random() * 4 + 2,
+            alpha: Math.random() * 0.5 + 0.2
+        });
+    }
+
+    // --- UI ELEMENTS ---
+    const ui = {
+        menuButtons: [
+            { text: "START", x: W/2, y: H*0.5, w: 200, h: 60, action: () => { currentState = STATE.STORY; story.current = 'start'; story.history = []; } },
+            { text: "ABOUT", x: W/2, y: H*0.65, w: 200, h: 60, action: () => alert("A narrative puzzle game. Choices matter. Touch or click to interact.") }
+        ],
+        storyChoices: [],
+        puzzleElements: []
+    };
+
+    // --- TOUCH & KEYBOARD HANDLERS ---
+    let touchStartX = 0, touchStartY = 0;
+
+    function handleTouchStart(e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const x = (touch.clientX - rect.left) * scaleX;
+        const y = (touch.clientY - rect.top) * scaleY;
+        touchStartX = x;
+        touchStartY = y;
+        processInput(x, y, 'start');
+    }
+
+    function handleTouchMove(e) {
+        e.preventDefault();
+        // Optional: drag for parallax
+        const touch = e.touches[0];
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const x = (touch.clientX - rect.left) * scaleX;
+        const y = (touch.clientY - rect.top) * scaleY;
+        // Adjust star parallax slightly
+        const dx = (x - touchStartX) * 0.01;
+        const dy = (y - touchStartY) * 0.01;
+        stars.forEach(s => {
+            s.x += dx * s.z;
+            s.y += dy * s.z;
+            s.x = (s.x + W) % W;
+            s.y = (s.y + H) % H;
+        });
+    }
+
+    function handleTouchEnd(e) {
+        e.preventDefault();
+    }
+
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+
+    // Keyboard support
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            if (currentState === STATE.MENU) {
+                currentState = STATE.STORY;
+                story.current = 'start';
+                story.history = [];
+            }
+        }
+        // Number keys for choices
+        if (currentState === STATE.STORY && story.nodes[story.current] && story.nodes[story.current].choices) {
+            const idx = parseInt(e.key) - 1;
+            const node = story.nodes[story.current];
+            if (idx >= 0 && idx < node.choices.length) {
+                selectChoice(idx);
+            }
+        }
+    });
+
+    // --- INPUT PROCESSING ---
+    function processInput(x, y, phase) {
+        if (phase !== 'start') return;
+
+        if (currentState === STATE.MENU) {
+            ui.menuButtons.forEach(btn => {
+                if (x > btn.x - btn.w/2 && x < btn.x + btn.w/2 && y > btn.y - btn.h/2 && y < btn.y + btn.h/2) {
+                    btn.action();
+                }
+            });
+        } else if (currentState === STATE.STORY) {
+            const node = story.nodes[story.current];
+            if (node && node.choices) {
+                ui.storyChoices.forEach((choice, idx) => {
+                    if (x > choice.x - choice.w/2 && x < choice.x + choice.w/2 && y > choice.y - choice.h/2 && y < choice.y + choice.h/2) {
+                        selectChoice(idx);
+                    }
+                });
+            }
+        } else if (currentState === STATE.PUZZLE) {
+            // Puzzle interactions handled in update/draw logic via puzzle-specific handlers
+            handlePuzzleInput(x, y);
+        } else if (currentState === STATE.ENDING) {
+            // Tap to return to menu
+            currentState = STATE.MENU;
+        }
+    }
+
+    function selectChoice(idx) {
+        const node = story.nodes[story.current];
+        if (!node || !node.choices) return;
+        const choice = node.choices[idx];
+        story.history.push(story.current);
+        if (choice.next) {
+            story.current = choice.next;
+            const nextNode = story.nodes[story.current];
+            if (nextNode && nextNode.puzzle) {
+                currentState = STATE.PUZZLE;
+                // Reset puzzle state
+                if (nextNode.puzzle === 'pattern') {
+                    puzzles.pattern.playerInput = [];
+                    puzzles.pattern.solved = false;
+                } else if (nextNode.puzzle === 'grid') {
+                    puzzles.grid.grid = [
+                        [1, 0, 1],
+                        [0, 1, 0],
+                        [1, 0, 1]
+                    ];
+                    puzzles.grid.solved = false;
+                }
+            } else if (nextNode && nextNode.end) {
+                currentState = STATE.ENDING;
+            } else {
+                currentState = STATE.STORY;
+            }
+        }
+    }
+
+    function handlePuzzleInput(x, y) {
+        // Determine which puzzle
+        if (puzzles.pattern && !puzzles.pattern.solved) {
+            // Pattern puzzle: four symbols in a row
+            const symbols = puzzles.pattern.symbols;
+            const startX = W * 0.2;
+            const spacing = W * 0.2;
+            const symY = H * 0.6;
+            const symSize = Math.min(W, H) * 0.1;
+            for (let i = 0; i < symbols.length; i++) {
+                const sx = startX + i * spacing;
+                if (x > sx - symSize && x < sx + symSize && y > symY - symSize && y < symY + symSize) {
+                    // Add to input
+                    puzzles.pattern.playerInput.push(i);
+                    // Check if correct prefix
+                    const target = puzzles.pattern.target;
+                    const input = puzzles.pattern.playerInput;
+                    let correct = true;
+                    for (let j = 0; j < input.length; j++) {
+                        if (input[j] !== target[j]) { correct = false; break; }
+                    }
+                    if (!correct) {
+                        puzzles.pattern.playerInput = [];
+                    } else if (input.length === target.length) {
+                        puzzles.pattern.solved = true;
+                        // Advance story
+                        story.current = 'afterPattern';
+                        currentState = STATE.STORY;
+                    }
+                    break;
+                }
+            }
+        } else if (puzzles.grid && !puzzles.grid.solved) {
+            // Grid puzzle: 3x3
+            const size = Math.min(W, H) * 0.5;
+            const cellSize = size / 3;
+            const startX = (W - size) / 2;
+            const startY = H * 0.5 - size / 2;
+            const col = Math.floor((x - startX) / cellSize);
+            const row = Math.floor((y - startY) / cellSize);
+            if (row >= 0 && row < 3 && col >= 0 && col < 3) {
+                // Toggle cell (but don't allow toggling center? Actually puzzle allows)
+                puzzles.grid.grid[row][col] = puzzles.grid.grid[row][col] ? 0 : 1;
+                // Check if matches target
+                let match = true;
+                for (let r = 0; r < 3; r++) {
+                    for (let c = 0; c < 3; c++) {
+                        if (puzzles.grid.grid[r][c] !== puzzles.grid.target[r][c]) {
+                            match = false;
+                        }
+                    }
+                }
+                if (match) {
+                    puzzles.grid.solved = true;
+                    story.current = 'afterGrid';
+                    currentState = STATE.STORY;
+                }
+            }
+        }
+    }
+
+    // --- UPDATE & DRAW ---
+    function update() {
+        time += 0.016;
+        // Update particles
+        particles.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0) p.x = W;
+            if (p.x > W) p.x = 0;
+            if (p.y < 0) p.y = H;
+            if (p.y > H) p.y = 0;
+        });
+        // Update stars for parallax drift
+        stars.forEach(s => {
+            s.x += 0.1 * s.z;
+            if (s.x > W) s.x = 0;
+        });
+    }
+
+    function drawBackground() {
+        // Deep space gradient
+        const grad = ctx.createRadialGradient(W*0.5, H*0.3, 0, W*0.5, H*0.5, Math.max(W,H)*0.8);
+        grad.addColorStop(0, '#0a0a1a');
+        grad.addColorStop(0.6, '#050510');
+        grad.addColorStop(1, '#000000');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
+
+        // Stars (pseudo-3D layers)
+        stars.forEach(s => {
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.size * s.z, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(180, 220, 255, ${0.3 + s.z * 0.3})`;
+            ctx.fill();
+            // Glow
+            ctx.shadowColor = '#7ab0ff';
+            ctx.shadowBlur = 10 * s.z;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        });
+
+        // Mid particles
+        particles.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(100, 180, 255, ${p.alpha})`;
+            ctx.shadowColor = '#3a6ea5';
+            ctx.shadowBlur = 15;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        });
+
+        // Grid lines for pseudo-3D feel
+        ctx.strokeStyle = 'rgba(60, 100, 180, 0.15)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 10; i++) {
+            const y = (time * 20 + i * 80) % H;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(W, y + 40);
+            ctx.stroke();
+        }
+    }
+
+    function drawMenu() {
+        ctx.save();
+        // Title with glow
+        ctx.font = `bold ${Math.min(W, H) * 0.12}px 'Courier New', monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#4a8cff';
+        ctx.shadowBlur = 30;
+        ctx.fillStyle = '#e0f0ff';
+        ctx.fillText('THE LAST', W/2, H*0.25);
+        ctx.fillText('SIGNAL', W/2, H*0.37);
+        ctx.shadowBlur = 0;
+
+        // Subtitle
+        ctx.font = `${Math.min(W, H) * 0.035}px 'Courier New', monospace`;
+        ctx.fillStyle = '#8ab0e0';
+        ctx.fillText('a narrative puzzle', W/2, H*0.44);
+
+        // Buttons
+        ui.menuButtons.forEach(btn => {
+            ctx.shadowColor = '#2a5a9a';
+            ctx.shadowBlur = 20;
+            ctx.fillStyle = 'rgba(20, 40, 80, 0.7)';
+            ctx.strokeStyle = '#4a8cff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.roundRect(btn.x - btn.w/2, btn.y - btn.h/2, btn.w, btn.h, 15);
+            ctx.fill();
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.font = `bold ${Math.min(W, H) * 0.05}px 'Courier New', monospace`;
+            ctx.fillStyle = '#d0e4ff';
+            ctx.fillText(btn.text, btn.x, btn.y);
+        });
+        ctx.restore();
+    }
+
+    function drawStory() {
+        ctx.save();
+        const node = story.nodes[story.current];
+        if (!node) return;
+
+        // Dialogue box
+        const boxH = H * 0.4;
+        const boxY = H * 0.55;
+        ctx.shadowColor = '#1a3a6a';
+        ctx.shadowBlur = 30;
+        ctx.fillStyle = 'rgba(5, 10, 25, 0.85)';
+        ctx.strokeStyle = '#3a6ea5';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(W*0.05, boxY, W*0.9, boxH, 20);
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Text
+        ctx.font = `${Math.min(W, H) * 0.035}px 'Courier New', monospace`;
+        ctx.fillStyle = '#c0d8ff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        const padding = W * 0.06;
+        const textY = boxY + padding;
+        wrapText(node.text, W*0.05 + padding, textY, W*0.9 - padding*2, Math.min(W, H) * 0.045);
+
+        // Choices
+        if (node.choices) {
+            ui.storyChoices = [];
+            const choiceY = boxY + boxH * 0.55;
+            const choiceH = Math.min(W, H) * 0.07;
+            const choiceSpacing = choiceH * 1.6;
+            node.choices.forEach((choice, idx) => {
+                const cy = choiceY + idx * choiceSpacing;
+                const cx = W/2;
+                const cw = Math.min(W * 0.7, 400);
+                ui.storyChoices.push({ x: cx, y: cy, w: cw, h: choiceH });
+                // Button
+                ctx.shadowColor = '#2a5a9a';
+                ctx.shadowBlur = 15;
+                ctx.fillStyle = 'rgba(30, 60, 120, 0.7)';
+                ctx.strokeStyle = '#5a9eff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.roundRect(cx - cw/2, cy - choiceH/2, cw, choiceH, 12);
+                ctx.fill();
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+                // Number
+                ctx.font = `bold ${Math.min(W, H) * 0.04}px 'Courier New', monospace`;
+                ctx.fillStyle = '#a0c8ff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`${idx+1}. ${choice.text}`, cx, cy);
+            });
+        }
+
+        // History hint
+        ctx.font = `${Math.min(W, H) * 0.025}px 'Courier New', monospace`;
+        ctx.fillStyle = 'rgba(120, 160, 220, 0.5)';
+        ctx.textAlign = 'right';
+        ctx.fillText('touch to choose', W*0.95, H*0.95);
+        ctx.restore();
+    }
+
+    function drawPuzzle() {
+        ctx.save();
+        // Determine active puzzle
+        if (puzzles.pattern && !puzzles.pattern.solved) {
+            drawPatternPuzzle();
+        } else if (puzzles.grid && !puzzles.grid.solved) {
+            drawGridPuzzle();
+        }
+        ctx.restore();
+    }
+
+    function drawPatternPuzzle() {
+        const p = puzzles.pattern;
+        // Hint
+        ctx.font = `${Math.min(W, H) * 0.035}px 'Courier New', monospace`;
+        ctx.fillStyle = '#a0c8ff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(p.hint, W/2, H*0.25);
+
+        // Symbols
+        const symbols = p.symbols;
+        const startX = W * 0.2;
+        const spacing = W * 0.2;
+        const symY = H * 0.6;
+        const symSize = Math.min(W, H) * 0.1;
+        for (let i = 0; i < symbols.length; i++) {
+            const sx = startX + i * spacing;
+            const isSelected = p.playerInput.includes(i);
+            // Glow for selected
+            ctx.shadowColor = isSelected ? '#ffaa00' : '#4a8cff';
+            ctx.shadowBlur = isSelected ? 30 : 15;
+            ctx.fillStyle = isSelected ? 'rgba(255, 200, 50, 0.2)' : 'rgba(20, 40, 80, 0.6)';
+            ctx.strokeStyle = isSelected ? '#ffcc00' : '#5a9eff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(sx, symY, symSize, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            // Symbol text
+            ctx.font = `bold ${Math.min(W, H) * 0.08}px 'Courier New', monospace`;
+            ctx.fillStyle = '#e0f0ff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(symbols[i], sx, symY);
+        }
+
+        // Show target sequence
+        ctx.font = `${Math.min(W, H) * 0.03}px 'Courier New', monospace`;
+        ctx.fillStyle = '#7a9ec0';
+        ctx.fillText('Target: ○ △ ☆ ◇', W/2, H*0.78);
+    }
+
+    function drawGridPuzzle() {
+        const p = puzzles.grid;
+        ctx.font = `${Math.min(W, H) * 0.035}px 'Courier New', monospace`;
+        ctx.fillStyle = '#a0c8ff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(p.hint, W/2, H*0.2);
+
+        const size = Math.min(W, H) * 0.5;
+        const cellSize = size / 3;
+        const startX = (W - size) / 2;
+        const startY = H * 0.5 - size / 2;
+
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                const x = startX + c * cellSize;
+                const y = startY + r * cellSize;
+                const filled = p.grid[r][c];
+                ctx.shadowColor = filled ? '#3a8aff' : '#1a3a6a';
+                ctx.shadowBlur = filled ? 20 : 5;
+                ctx.fillStyle = filled ? 'rgba(60, 140, 255, 0.7)' : 'rgba(20, 40, 80, 0.4)';
+                ctx.strokeStyle = '#5a9eff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.roundRect(x + 2, y + 2, cellSize - 4, cellSize - 4, 10);
+                ctx.fill();
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+                // Inner glow dot
+                if (filled) {
+                    ctx.beginPath();
+                    ctx.arc(x + cellSize/2, y + cellSize/2, cellSize*0.15, 0, Math.PI*2);
+                    ctx.fillStyle = '#a0d0ff';
+                    ctx.shadowColor = '#ffffff';
+                    ctx.shadowBlur = 15;
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+            }
+        }
+    }
+
+    function drawEnding() {
+        ctx.save();
+        const node = story.nodes[story.current];
+        ctx.font = `bold ${Math.min(W, H) * 0.06}px 'Courier New', monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#4a8cff';
+        ctx.shadowBlur = 30;
+        ctx.fillStyle = '#e0f0ff';
+        ctx.fillText('ENDING REACHED', W/2, H*0.3);
+        ctx.shadowBlur = 0;
+
+        // Ending text
+        ctx.font = `${Math.min(W, H) * 0.04}px 'Courier New', monospace`;
+        ctx.fillStyle = '#c0d8ff';
+        const text = node ? node.text : "The story ends.";
+        wrapText(text, W*0.1, H*0.45, W*0.8, Math.min(W, H) * 0.05);
+
+        // Tap to return
+        ctx.font = `${Math.min(W, H) * 0.03}px 'Courier New', monospace`;
+        ctx.fillStyle = 'rgba(120, 160, 220, 0.7)';
+        ctx.fillText('tap to return to menu', W/2, H*0.9);
+        ctx.restore();
+    }
+
+    // Helper: wrap text
+    function wrapText(text, x, y, maxWidth, lineHeight) {
+        const words = text.split(' ');
+        let line = '';
+        let cy = y;
+        for (let n = 0; n < words.length; n++) {
+            const testLine = line + words[n] + ' ';
+            const metrics = ctx.measureText(testLine);
+            if (metrics.width > maxWidth && n > 0) {
+                ctx.fillText(line, x, cy);
+                line = words[n] + ' ';
+                cy += lineHeight;
+            } else {
+                line = testLine;
+            }
+        }
+        ctx.fillText(line, x, cy);
+    }
+
+    // Polyfill for roundRect
+    if (!CanvasRenderingContext2D.prototype.roundRect) {
+        CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+            if (w < 2 * r) r = w / 2;
+            if (h < 2 * r) r = h / 2;
+            this.moveTo(x + r, y);
+            this.lineTo(x + w - r, y);
+            this.quadraticCurveTo(x + w, y, x + w, y + r);
+            this.lineTo(x + w, y + h - r);
+            this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+            this.lineTo(x + r, y + h);
+            this.quadraticCurveTo(x, y + h, x, y + h - r);
+            this.lineTo(x, y + r);
+            this.quadraticCurveTo(x, y, x + r, y);
+            return this;
+        };
+    }
+
+    // --- MAIN LOOP ---
+    function gameLoop() {
+        update();
+        drawBackground();
+
+        if (currentState === STATE.MENU) {
+            drawMenu();
+        } else if (currentState === STATE.STORY) {
+            drawStory();
+        } else if (currentState === STATE.PUZZLE) {
+            drawPuzzle();
+        } else if (currentState === STATE.ENDING) {
+            drawEnding();
+        }
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Start
+    gameLoop();
+
+    // Ensure canvas resizes properly
+    window.addEventListener('orientationchange', () => {
+        setTimeout(resize, 200);
+    });
+</script>
+</body>
+</html>
