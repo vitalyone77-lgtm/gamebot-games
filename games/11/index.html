@@ -1,0 +1,637 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Midnight Verdict</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; touch-action: none; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+function resize(){
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- STATE ----------
+const G = {
+  scene: 'intro', // intro, hotel, room, board, interrogate, accuse, ending
+  t: 0,
+  bg: 0, // parallax offset
+  rain: [],
+  particles: [],
+  msg: '',
+  msgT: 0,
+  clueFound: { photo:false, glass:false, ledger:false, key:false },
+  interrogated: { singer:false, waiter:false, manager:false },
+  statements: [], // collected statements
+  contradictions: 0,
+  selectedSuspect: null,
+  suspect: {
+    singer: { name:'Vera Lune', role:'Jazz Singer', x:0.22, y:0.55, hue:310,
+      q:['Where were you at 11 PM?','Did you know the victim?','What about the ledger?'],
+      a:['I was on stage, darling. Fifty witnesses.','Marcus owed me money. But killing him? No.',
+         'Marcus kept a black ledger. He tried to blackmail the manager with it.'] },
+    waiter: { name:'Tom Ridley', role:'Night Waiter', x:0.5, y:0.62, hue:200,
+      q:['Describe your rounds.','Any strange guests?','The glass in room 313?'],
+      a:['Room service at 10:40. Then I saw Vera leave the stage early.','A man in a grey coat asked for 313. I refused him.','I never entered 313. The glass must be from earlier.'] },
+    manager: { name:'Ellis Crane', role:'Hotel Manager', x:0.78, y:0.55, hue:40,
+      q:['Your relationship with Marcus?','The black ledger?','Where were you at 11?'],
+      a:['A difficult guest. Always complaining about the music.','Ledger? I have no idea what that is.','In my office. Doing paperwork. Alone, unfortunately.'] }
+  },
+  clues: {
+    photo: { name:'Torn Photograph', desc:'Marcus and Ellis at a card table. Money on the felt.' },
+    glass: { name:'Whiskey Glass', desc:'Lipstick on the rim. Not the victim\'s shade.' },
+    ledger: { name:'Black Ledger', desc:'Payments to Ellis Crane. A debt of £40,000.' },
+    key:   { name:'Room Key 313', desc:'Found in the hall. Fingerprints: two sets.' }
+  },
+  endText: '',
+  endColor: '#fff'
+};
+
+// ---------- RAIN ----------
+for(let i=0;i<160;i++){
+  G.rain.push({x:Math.random()*W, y:Math.random()*H, s:0.5+Math.random()*1.5, v:6+Math.random()*8});
+}
+
+// ---------- UI HELPERS ----------
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+const buttons = [];
+function btn(id,x,y,w,h,label,color){
+  buttons.push({id,x,y,w,h,label,color:color||'#e0c070'});
+}
+function drawButtons(){
+  ctx.font = `bold ${Math.max(12, Math.min(W,H)*0.028)}px 'Courier New', monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const b of buttons){
+    const grd = ctx.createLinearGradient(b.x,b.y,b.x,b.y+b.h);
+    grd.addColorStop(0,'rgba(20,24,36,0.92)');
+    grd.addColorStop(1,'rgba(8,10,18,0.95)');
+    ctx.fillStyle = grd;
+    roundRect(b.x,b.y,b.w,b.h,8); ctx.fill();
+    ctx.strokeStyle = b.color; ctx.lineWidth = 2;
+    ctx.shadowColor = b.color; ctx.shadowBlur = 10;
+    roundRect(b.x,b.y,b.w,b.h,8); ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = b.color;
+    ctx.fillText(b.label, b.x+b.w/2, b.y+b.h/2);
+  }
+}
+
+function showMsg(s){
+  G.msg = s; G.msgT = 3.2;
+}
+function drawMsg(){
+  if(G.msgT<=0) return;
+  const a = Math.min(1, G.msgT*2);
+  ctx.globalAlpha = a;
+  const fs = Math.max(12, Math.min(W,H)*0.026);
+  ctx.font = `italic ${fs}px 'Courier New', monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  const tw = ctx.measureText(G.msg).width + 30;
+  const x = W/2 - tw/2, y = H-50, h = fs*2.2;
+  ctx.fillStyle='rgba(0,0,0,0.75)';
+  roundRect(x,y-tw+10,tw,h,8); ctx.fill();
+  ctx.strokeStyle='#c9a24a'; ctx.lineWidth=1.5;
+  roundRect(x,y-tw+10,tw,h,8); ctx.stroke();
+  ctx.fillStyle='#f0d99a';
+  ctx.fillText(G.msg, W/2, y+h-6);
+  ctx.globalAlpha = 1;
+}
+
+// ---------- BACKGROUNDS (pseudo-3D parallax) ----------
+function drawRain(){
+  ctx.strokeStyle='rgba(180,210,255,0.35)';
+  ctx.lineWidth=1;
+  for(const r of G.rain){
+    ctx.beginPath();
+    ctx.moveTo(r.x, r.y);
+    ctx.lineTo(r.x-2, r.y+r.v);
+    ctx.stroke();
+    r.y += r.v;
+    r.x -= 0.6;
+    if(r.y>H){ r.y=-10; r.x=Math.random()*W+50; }
+    if(r.x<-10) r.x = W+10;
+  }
+}
+
+function drawHotelExterior(){
+  // sky gradient
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0a0d1c'); g.addColorStop(0.5,'#141a2e'); g.addColorStop(1,'#1b1224');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // moon
+  ctx.fillStyle='rgba(230,235,255,0.9)';
+  ctx.shadowColor='#cfd8ff'; ctx.shadowBlur=40;
+  ctx.beginPath(); ctx.arc(W*0.78, H*0.18, Math.min(W,H)*0.05, 0, Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  // far buildings
+  const far = W*0.02 * Math.sin(G.t*0.2);
+  ctx.fillStyle='#0e1324';
+  for(let i=0;i<8;i++){
+    const bw = W/6, bh = H*(0.3 + (i%3)*0.06);
+    ctx.fillRect(i*bw - far, H-bh, bw-4, bh);
+  }
+  // near building - hotel
+  const off = G.bg*40;
+  ctx.fillStyle='#1a1f38';
+  ctx.fillRect(W*0.15-off, H*0.25, W*0.7, H*0.75);
+  ctx.fillStyle='#232a48';
+  ctx.fillRect(W*0.15-off, H*0.25, W*0.7, 12);
+
+  // windows
+  for(let r=0;r<6;r++){
+    for(let c=0;c<6;c++){
+      const lit = Math.random() > 0.72;
+      const wx = W*0.2-off + c*(W*0.62/6);
+      const wy = H*0.32 + r*(H*0.62/6);
+      ctx.fillStyle = lit ? 'rgba(255,215,120,0.85)' : 'rgba(40,50,80,0.8)';
+      ctx.fillRect(wx, wy, W*0.06, H*0.05);
+      if(lit){
+        ctx.shadowColor='#ffcf6a'; ctx.shadowBlur=14;
+        ctx.fillRect(wx, wy, W*0.06, H*0.05);
+        ctx.shadowBlur=0;
+      }
+    }
+  }
+
+  // neon sign
+  const nx = W*0.5-off, ny = H*0.2;
+  ctx.font=`bold ${Math.min(W,H)*0.05}px 'Courier New', monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#ff5b9c';
+  ctx.shadowColor='#ff5b9c'; ctx.shadowBlur=25;
+  ctx.fillText('HOTEL BLACKWOOD', nx, ny);
+  ctx.shadowBlur=0;
+  ctx.fillStyle='rgba(255,255,255,0.9)';
+  ctx.fillText('HOTEL BLACKWOOD', nx, ny);
+
+  // street
+  ctx.fillStyle='#05060c';
+  ctx.fillRect(0,H*0.9,W,H*0.1);
+
+  drawRain();
+}
+
+function drawRoom(){
+  // interior gradient
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#2a1c14'); g.addColorStop(0.6,'#1a1210'); g.addColorStop(1,'#0a0806');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // back wall / floor line
+  const horizon = H*0.55;
+  ctx.fillStyle='#3a281c';
+  ctx.fillRect(0,0,W,horizon);
+  ctx.fillStyle='#1d140e';
+  ctx.fillRect(0,horizon,W,H-horizon);
+
+  // wallpaper stripes
+  for(let i=0;i<20;i++){
+    ctx.fillStyle = i%2 ? 'rgba(90,60,40,0.15)' : 'rgba(50,35,25,0.1)';
+    ctx.fillRect(i*(W/20), 0, W/40, horizon);
+  }
+
+  // window with rain
+  const wx = W*0.68, wy = H*0.12, ww = W*0.25, wh = H*0.32;
+  const wg = ctx.createLinearGradient(wx,wy,wx,wy+wh);
+  wg.addColorStop(0,'#0a1428'); wg.addColorStop(1,'#1a2440');
+  ctx.fillStyle=wg; ctx.fillRect(wx,wy,ww,wh);
+  ctx.strokeStyle='#6a4a2a'; ctx.lineWidth=6;
+  ctx.strokeRect(wx,wy,ww,wh);
+  ctx.beginPath(); ctx.moveTo(wx+ww/2,wy); ctx.lineTo(wx+ww/2,wy+wh);
+  ctx.moveTo(wx,wy+wh/2); ctx.lineTo(wx+ww,wy+wh/2); ctx.stroke();
+
+  // lamp glow
+  ctx.save();
+  const lg = ctx.createRadialGradient(W*0.25, H*0.3, 0, W*0.25, H*0.3, H*0.4);
+  lg.addColorStop(0,'rgba(255,200,120,0.35)');
+  lg.addColorStop(1,'rgba(255,200,120,0)');
+  ctx.fillStyle=lg; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // bed outline
+  ctx.fillStyle='#2a1a12';
+  ctx.fillRect(W*0.05, H*0.62, W*0.5, H*0.28);
+  ctx.fillStyle='#4a3020';
+  ctx.fillRect(W*0.05, H*0.6, W*0.5, H*0.06);
+
+  // body chalk outline
+  ctx.strokeStyle='rgba(240,240,240,0.55)';
+  ctx.lineWidth=3;
+  ctx.setLineDash([6,5]);
+  ctx.beginPath();
+  ctx.ellipse(W*0.3, H*0.78, W*0.11, H*0.06, 0.1, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  drawRain();
+}
+
+function drawBoard(){
+  // cork board
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#3a2a18'); g.addColorStop(1,'#1e1408');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // wood texture
+  for(let i=0;i<40;i++){
+    ctx.strokeStyle=`rgba(80,55,30,${0.05+Math.random()*0.08})`;
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(0, i*H/40);
+    ctx.bezierCurveTo(W*0.3, i*H/40+10, W*0.7, i*H/40-10, W, i*H/40);
+    ctx.stroke();
+  }
+
+  // title
+  ctx.font=`bold ${Math.min(W,H)*0.04}px 'Courier New', monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillStyle='#f0d99a';
+  ctx.shadowColor='#c9a24a'; ctx.shadowBlur=15;
+  ctx.fillText('DEDUCTION BOARD', W/2, H*0.04);
+  ctx.shadowBlur=0;
+
+  // clue cards
+  const clues = Object.entries(G.clues);
+  const cols = 2, rows = 2;
+  const cw = W*0.42, ch = H*0.28;
+  const startX = W*0.04, startY = H*0.13;
+  clues.forEach(([k, c], i)=>{
+    const col = i%cols, row = Math.floor(i/cols);
+    const x = startX + col*(cw + W*0.08);
+    const y = startY + row*(ch + H*0.04);
+    const found = G.clueFound[k];
+    const grd = ctx.createLinearGradient(x,y,x,y+ch);
+    if(found){ grd.addColorStop(0,'#f5ecd0'); grd.addColorStop(1,'#d8c89a'); }
+    else { grd.addColorStop(0,'#3a3028'); grd.addColorStop(1,'#241c14'); }
+    ctx.fillStyle=grd;
+    ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowBlur=10; ctx.shadowOffsetY=4;
+    roundRect(x,y,cw,ch,6); ctx.fill();
+    ctx.shadowBlur=0; ctx.shadowOffsetY=0;
+    ctx.strokeStyle= found ? '#a08040' : '#4a3a28';
+    ctx.lineWidth=2; roundRect(x,y,cw,ch,6); ctx.stroke();
+
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    if(found){
+      ctx.fillStyle='#3a2410';
+      ctx.font=`bold ${Math.max(11,Math.min(W,H)*0.024)}px 'Courier New', monospace`;
+      ctx.fillText(c.name.toUpperCase(), x+12, y+10);
+      ctx.fillStyle='#4a3018';
+      ctx.font=`italic ${Math.max(10,Math.min(W,H)*0.02)}px 'Courier New', monospace`;
+      wrapText(c.desc, x+12, y+34, cw-24, Math.min(W,H)*0.026);
+    } else {
+      ctx.fillStyle='#6a5040';
+      ctx.font=`bold ${Math.max(11,Math.min(W,H)*0.024)}px 'Courier New', monospace`;
+      ctx.fillText('??? UNDISCOVERED', x+12, y+10);
+    }
+  });
+
+  // red string connecting found clues
+  const found = clues.filter(([k])=>G.clueFound[k]);
+  ctx.strokeStyle='rgba(200,40,40,0.7)'; ctx.lineWidth=2;
+  for(let i=0;i<found.length-1;i++){
+    const a = clues.indexOf(found[i]);
+    const b = clues.indexOf(found[i+1]);
+    const ax = startX + (a%cols)*(cw+W*0.08) + cw/2;
+    const ay = startY + Math.floor(a/cols)*(ch+H*0.04) + ch/2;
+    const bx = startX + (b%cols)*(cw+W*0.08) + cw/2;
+    const by = startY + Math.floor(b/cols)*(ch+H*0.04) + ch/2;
+    ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+  }
+}
+
+function wrapText(text,x,y,maxW,lineH){
+  const words = text.split(' ');
+  let line = '';
+  for(let n=0;n<words.length;n++){
+    const test = line + words[n] + ' ';
+    if(ctx.measureText(test).width > maxW && n>0){
+      ctx.fillText(line, x, y);
+      line = words[n] + ' ';
+      y += lineH;
+    } else line = test;
+  }
+  ctx.fillText(line, x, y);
+}
+
+function drawInterrogation(){
+  // dim room
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0a0a14'); g.addColorStop(1,'#14101c');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // table
+  ctx.fillStyle='#2a1e14';
+  ctx.fillRect(0, H*0.68, W, H*0.32);
+  ctx.fillStyle='#3a2a1c';
+  ctx.fillRect(0, H*0.68, W, 8);
+
+  // spotlight cone
+  ctx.save();
+  const spot = ctx.createRadialGradient(W*0.5, H*0.3, 0, W*0.5, H*0.4, H*0.7);
+  spot.addColorStop(0,'rgba(255,220,160,0.25)');
+  spot.addColorStop(1,'rgba(255,220,160,0)');
+  ctx.fillStyle=spot; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // suspect portrait
+  const s = G.selectedSuspect;
+  if(s){
+    const cx = W*0.5, cy = H*0.34;
+    const r = Math.min(W,H)*0.12;
+    const hg = ctx.createRadialGradient(cx,cy,r*0.2,cx,cy,r*1.6);
+    hg.addColorStop(0,`hsla(${s.hue},60%,50%,0.9)`);
+    hg.addColorStop(1,`hsla(${s.hue},60%,20%,0)`);
+    ctx.fillStyle=hg;
+    ctx.beginPath(); ctx.arc(cx,cy,r*1.6,0,Math.PI*2); ctx.fill();
+
+    // silhouette head
+    ctx.fillStyle=`hsl(${s.hue},35%,18%)`;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=`hsla(${s.hue},60%,70%,0.9)`;
+    // eyes
+    ctx.beginPath(); ctx.arc(cx-r*0.35,cy-r*0.15,r*0.08,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx+r*0.35,cy-r*0.15,r*0.08,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=`hsla(${s.hue},60%,70%,0.7)`;
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(cx,cy+r*0.35,r*0.25,0.15,Math.PI-0.15); ctx.stroke();
+
+    // name plate
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`bold ${Math.min(W,H)*0.032}px 'Courier New', monospace`;
+    ctx.fillStyle='#f0d99a';
+    ctx.shadowColor='#c9a24a'; ctx.shadowBlur=12;
+    ctx.fillText(s.name.toUpperCase(), cx, cy + r*1.9);
+    ctx.shadowBlur=0;
+    ctx.font=`italic ${Math.min(W,H)*0.022}px 'Courier New', monospace`;
+    ctx.fillStyle='#a89a78';
+    ctx.fillText(s.role, cx, cy + r*2.4);
+  }
+
+  // statement log
+  if(G.statements.length){
+    const logY = H*0.72;
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.font=`italic ${Math.max(11,Math.min(W,H)*0.022)}px 'Courier New', monospace`;
+    const recent = G.statements.slice(-2);
+    recent.forEach((st,i)=>{
+      ctx.fillStyle=`rgba(240,220,160,${0.9 - i*0.35})`;
+      wrapText('"'+st+'"', W*0.06, logY + i*H*0.07, W*0.88, Math.min(W,H)*0.03);
+    });
+  }
+}
+
+// ---------- SCENE SETUP ----------
+function setupIntro(){
+  buttons.length=0;
+  G.msg='Rain hammers the window. A body in room 313.';
+  G.msgT=4;
+  btn('start', W*0.5 - W*0.22, H*0.72, W*0.44, H*0.09, '▶ BEGIN INVESTIGATION', '#e0c070');
+}
+
+function setupHotel(){
+  buttons.length=0;
+  btn('enter', W*0.5 - W*0.22, H*0.72, W*0.44, H*0.09, '▶ ENTER HOTEL', '#e0c070');
+}
+
+function setupRoom(){
+  buttons.length=0;
+  const bw = W*0.42, bh = H*0.08;
+  // clue buttons
+  const clueList = ['photo','glass','ledger','key'];
+  // position clues across room
+  const positions = [
+    {x:W*0.06, y:H*0.16}, // photo on wall
+    {x:W*0.62, y:H*0.62}, // glass on floor
+    {x:W*0.3,  y:H*0.5},  // ledger near bed
+    {x:W*0.5,  y:H*0.68}  // key on floor
+  ];
+  clueList.forEach((k,i)=>{
+    if(!G.clueFound[k]){
+      const p = positions[i];
+      btn('clue_'+k, p.x, p.y, bw*0.55, bh*0.85, '🔍 '+(k[0].toUpperCase()+k.slice(1)), '#8fd0ff');
+    }
+  });
+  btn('board', W*0.5 - W*0.22, H*0.9, W*0.44, H*0.07, '📋 DEDUCTION BOARD', '#e0c070');
+}
+
+function setupBoard(){
+  buttons.length=0;
+  const suspects = ['singer','waiter','manager'];
+  const bw = W*0.28, bh = H*0.07;
+  suspects.forEach((s,i)=>{
+    const x = W*0.04 + i*(bw + W*0.03);
+    btn('sus_'+s, x, H*0.85, bw, bh, G.suspect[s].name.split(' ')[0], '#f0a0d0');
+  });
+  btn('accuse', W*0.5 - W*0.22, H*0.94, W*0.44, H*0.055, '⚖ ACCUSE', '#ff5b5b');
+}
+
+function setupInterrogation(suspectId){
+  buttons.length=0;
+  G.selectedSuspect = G.suspect[suspectId];
+  G.selectedSuspect.id = suspectId;
+  const qs = G.selectedSuspect.q;
+  const bw = W*0.9, bh = H*0.065;
+  qs.forEach((q,i)=>{
+    btn('q_'+i, W*0.05, H*0.55 + i*(bh + H*0.015), bw, bh, q, '#a0d0ff');
+  });
+  btn('back', W*0.05, H*0.9, W*0.35, H*0.07, '← BACK', '#e0c070');
+  btn('clues', W*0.6, H*0.9, W*0.35, H*0.07, 'SHOW CLUES', '#f0d99a');
+}
+
+// ---------- INPUT ----------
+let touchStart = {x:0,y:0,t:0};
+function handleTap(x,y){
+  if(G.scene==='intro' && hit('start',x,y)){
+    G.scene='hotel'; setupHotel(); G.bg=0; return;
+  }
+  if(G.scene==='hotel' && hit('enter',x,y)){
+    G.scene='room'; setupRoom(); return;
+  }
+  if(G.scene==='room'){
+    for(const b of buttons){
+      if(b.id.startsWith('clue_') && hit(b.id,x,y)){
+        const k = b.id.slice(5);
+        if(!G.clueFound[k]){
+          G.clueFound[k]=true;
+          showMsg('Clue found: '+G.clues[k].name);
+          setupRoom();
+        }
+        return;
+      }
+      if(b.id==='board' && hit('board',x,y)){
+        G.scene='board'; setupBoard(); return;
+      }
+    }
+  }
+  if(G.scene==='board'){
+    for(const b of buttons){
+      if(b.id.startsWith('sus_') && hit(b.id,x,y)){
+        const sid = b.id.slice(4);
+        G.scene='interrogate';
+        G.statements=[];
+        setupInterrogation(sid);
+        return;
+      }
+      if(b.id==='accuse' && hit('accuse',x,y)){
+        tryAccuse();
+        return;
+      }
+    }
+  }
+  if(G.scene==='interrogate'){
+    for(const b of buttons){
+      if(b.id.startsWith('q_')){
+        if(hit(b.id,x,y)){
+          const i = parseInt(b.id.slice(2));
+          const s = G.selectedSuspect;
+          G.statements.push(s.a[i]);
+          if(G.statements.length>3) G.statements.shift();
+          if(!G.interrogated[s.id]) G.interrogated[s.id]=true;
+          return;
+        }
+      }
+      if(b.id==='back' && hit('back',x,y)){
+        G.scene='board'; setupBoard(); return;
+      }
+      if(b.id==='clues' && hit('clues',x,y)){
+        const found = Object.keys(G.clues).filter(k=>G.clueFound[k]).map(k=>G.clues[k].name).join(', ');
+        showMsg(found ? 'Evidence: '+found : 'No evidence yet.');
+        return;
+      }
+    }
+  }
+  if(G.scene==='ending'){
+    if(hit('restart',x,y)||true){
+      location.reload();
+    }
+  }
+}
+
+function hit(id,x,y){
+  const b = buttons.find(b=>b.id===id);
+  if(!b) return false;
+  return x>=b.x && x<=b.x+b.w && y>=b.y && y<=b.y+b.h;
+}
+
+function tryAccuse(){
+  const foundCount = Object.values(G.clueFound).filter(Boolean).length;
+  const interrogatedCount = Object.values(G.interrogated).filter(Boolean).length;
+  if(foundCount < 3){
+    showMsg('You need more evidence before accusing. ('+foundCount+'/4 clues)');
+    return;
+  }
+  if(interrogatedCount < 3){
+    showMsg('Interrogate all three suspects first. ('+interrogatedCount+'/3)');
+    return;
+  }
+  // The correct answer: Ellis Crane (manager)
+  // Logic: ledger shows he owed Marcus. Glass with wrong lipstick = Vera's but she was on stage.
+  // Actually: The glass has lipstick NOT the victim's shade -> Vera's. Vera said she was on stage.
+  // Contradiction: waiter says Vera left the stage early. Vera lied.
+  // But ledger reveals Ellis motive. Key has two prints -> Ellis and Marcus.
+  // Twist: Vera lied but Ellis killed. The correct accusation is manager.
+  G.scene='ending';
+  G.endText = 'ELLIS CRANE. The ledger proves motive — £40,000 in debts to Marcus.\n\nThe torn photo shows them at cards. The glass was a red herring: Vera lied about the stage, but only to hide an affair.\n\nYou present the ledger. Ellis breaks.\n\nCASE CLOSED.';
+  G.endColor = '#8fff8f';
+  buttons.length=0;
+  btn('restart', W*0.5 - W*0.22, H*0.85, W*0.44, H*0.08, '↻ NEW CASE', '#e0c070');
+}
+
+// Touch
+cv.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  const t = e.touches[0];
+  const r = cv.getBoundingClientRect();
+  touchStart = {x:t.clientX-r.left, y:t.clientY-r.top, t:performance.now()};
+}, {passive:false});
+
+cv.addEventListener('touchmove', e=>{
+  e.preventDefault();
+}, {passive:false});
+
+cv.addEventListener('touchend', e=>{
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  const r = cv.getBoundingClientRect();
+  const x = t.clientX - r.left;
+  const y = t.clientY - r.top;
+  const dx = x - touchStart.x, dy = y - touchStart.y;
+  if(Math.hypot(dx,dy) < 30 && performance.now()-touchStart.t < 500){
+    handleTap(x,y);
+  }
+}, {passive:false});
+
+// Mouse (for desktop)
+cv.addEventListener('mousedown', e=>{
+  const r = cv.getBoundingClientRect();
+  handleTap(e.clientX-r.left, e.clientY-r.top);
+});
+
+// Keyboard
+window.addEventListener('keydown', e=>{
+  if(G.scene==='intro' && (e.key===' '||e.key==='Enter')){ G.scene='hotel'; setupHotel(); }
+  else if(G.scene==='ending' && (e.key===' '||e.key==='Enter')) location.reload();
+});
+
+// ---------- LOOP ----------
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now-last)/1000);
+  last = now;
+  G.t += dt;
+  if(G.msgT>0) G.msgT -= dt;
+  if(G.scene==='hotel') G.bg += dt*0.1;
+  else if(G.scene==='room') G.bg = Math.sin(G.t*0.3)*0.1;
+
+  ctx.clearRect(0,0,W,H);
+
+  if(G.scene==='intro'){
+    drawHotelExterior();
+    // overlay
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`bold ${Math.min(W,H)*0.075}px 'Courier New', monospace`;
+    ctx.fillStyle='#f0d99a';
+    ctx.shadowColor='#c9a24a'; ctx.shadowBlur=25;
+    ctx.fillText('MIDNIGHT', W/2, H*0.28);
+    ctx.fillText('VERDICT', W/2, H*0.4);
+    ctx.shadowBlur=0;
+    ctx.font=`italic ${Math.min(W,H)*0.026}px 'Courier New', monospace`;
+    ctx.fillStyle='#a89a78';
+    ctx.fillText('A detective mystery', W/2, H*0.5);
+    ctx.fillText('Room 313 · Hotel Blackwood · 11:47 PM', W/2, H*0.55);
+    drawButtons();
+  }
+  else if(G.scene==='hotel'){
+    drawHotelExterior();
+    ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(0,0,W,H);
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`bold ${Math.min(W,H)*0.05}px 'Courier New', monospace`;
+    ctx.fillStyle='#f0d99a';
+    ctx.shadowColor='#c9a24a'; ctx.shadowBlur=15;
+    ctx.fillText('HOTEL
